@@ -110,6 +110,19 @@ async function recordUsage(
   ]);
 }
 
+// Record a conversion-funnel event (fire-and-forget; never blocks the response).
+async function recordFunnelEvent(
+  db: D1Database,
+  event: 'limit_reached' | 'checkout_started' | 'converted',
+  apiKeyId: string | null,
+  source: string | null
+): Promise<void> {
+  await db
+    .prepare('INSERT INTO funnel_events (id, event, api_key_id, source) VALUES (?, ?, ?, ?)')
+    .bind(crypto.randomUUID(), event, apiKeyId, source)
+    .run();
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // Landing page
@@ -141,14 +154,17 @@ app.get('/og', async c => {
   // Reset usage if month rolled
   apiKey = await maybeResetUsage(c.env.DB, apiKey);
 
-  // Check rate limit
+  // Check rate limit. Hitting the limit is the highest-intent upgrade moment,
+  // so record it and point the caller at their dashboard to upgrade in place.
   if (apiKey.usage_count >= apiKey.monthly_limit) {
+    c.executionCtx.waitUntil(recordFunnelEvent(c.env.DB, 'limit_reached', apiKey.id, apiKey.tier));
+    const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
     return c.json(
       {
         error: 'Monthly image limit reached',
         tier: apiKey.tier,
         limit: apiKey.monthly_limit,
-        upgrade_url: '/register?tier=pro',
+        upgrade_url: `${base}/dashboard?key=${encodeURIComponent(rawKey)}&ref=limit`,
       },
       429
     );
@@ -395,6 +411,9 @@ app.post('/billing/checkout', async c => {
       successUrl: `${dashUrl}&upgraded=1`,
       cancelUrl: dashUrl,
     });
+    c.executionCtx.waitUntil(
+      recordFunnelEvent(c.env.DB, 'checkout_started', apiKey.id, user.source ?? null)
+    );
     return c.redirect(checkoutUrl, 303);
   } catch (err) {
     console.error('Checkout creation failed:', err);
@@ -464,8 +483,13 @@ app.post('/billing/webhook', async c => {
           const status = typeof obj.status === 'string' ? obj.status : 'active';
           const active = status === 'active' || status === 'trialing';
           const subId = typeof obj.id === 'string' ? obj.id : null;
+          const wasPaying = isPaidTier(user.billing_tier ?? 'free');
           // Grant the tier only while the subscription is in good standing.
           await applyTierToUser(c.env.DB, user.id, active && tier ? tier : 'free', status, subId);
+          // Record the conversion the first time this account starts paying.
+          if (active && tier && !wasPaying) {
+            await recordFunnelEvent(c.env.DB, 'converted', null, user.source ?? null);
+          }
         }
         break;
       }
@@ -502,10 +526,11 @@ app.get('/admin/metrics', async c => {
     return c.json({ error: 'Unauthorized' }, 401);
   }
 
-  const rows = await c.env.DB
-    .prepare('SELECT source, billing_tier FROM users')
-    .all<UserRow>();
-  const metrics = computeMetrics(rows.results ?? []);
+  const [rows, funnelRows] = await Promise.all([
+    c.env.DB.prepare('SELECT source, billing_tier FROM users').all<UserRow>(),
+    c.env.DB.prepare('SELECT event FROM funnel_events').all<{ event: string }>(),
+  ]);
+  const metrics = computeMetrics(rows.results ?? [], funnelRows.results ?? []);
   return c.json({ ...metrics, generated_at: new Date().toISOString() });
 });
 

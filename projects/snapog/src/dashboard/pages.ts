@@ -715,6 +715,16 @@ export function dashboardPage(key: ApiKey, recentCount: number, rawKey = ''): st
 
   const safeTier = escapeHtml(key.tier);
   const tierBadge = `<span class="tier-badge tier-${safeTier}">${safeTier}</span>`;
+  const nearLimit = key.tier === 'free' && pct >= 80;
+  // The moment a free user is at/over quota is the highest-intent upgrade
+  // trigger — surface it prominently rather than a quiet link.
+  const limitBanner = nearLimit
+    ? `<div class="alert" style="background:var(--accent-dim);border:1px solid var(--accent);color:var(--text-1);margin-bottom:20px;">
+         <strong>${pct >= 100 ? "You've hit your monthly limit." : "You're almost out of images."}</strong>
+         Upgrade to keep generating without interruption.
+         ${upgradeForm('pro', 'Upgrade to Pro — $19/mo →')}
+       </div>`
+    : '';
 
   const body = `
   ${nav()}
@@ -724,6 +734,7 @@ export function dashboardPage(key: ApiKey, recentCount: number, rawKey = ''): st
         <h1>Dashboard ${tierBadge}</h1>
         <p>API key: <code style="font-family:var(--font-mono);font-size:13px;color:var(--text-2);">${escapeHtml(key.key_prefix)}••••••••••••••••••••</code></p>
       </div>
+      ${limitBanner}
 
       <div class="dash-grid">
 

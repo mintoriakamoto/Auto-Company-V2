@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { computeMetrics, normalizeSource, type UserRow } from '../src/metrics';
+import {
+  computeMetrics,
+  computeFunnel,
+  normalizeSource,
+  type UserRow,
+  type FunnelEventRow,
+} from '../src/metrics';
 
 describe('normalizeSource', () => {
   it('slugifies and lowercases', () => {
@@ -47,5 +53,34 @@ describe('computeMetrics', () => {
     expect(m.signups).toBe(0);
     expect(m.conversion_rate).toBe(0);
     expect(m.by_source).toEqual([]);
+    expect(m.funnel.limit_reached).toBe(0);
+  });
+});
+
+describe('computeFunnel', () => {
+  const rows: FunnelEventRow[] = [
+    { event: 'limit_reached' },
+    { event: 'limit_reached' },
+    { event: 'limit_reached' },
+    { event: 'limit_reached' },
+    { event: 'checkout_started' },
+    { event: 'checkout_started' },
+    { event: 'converted' },
+    { event: 'noise' }, // ignored
+  ];
+
+  it('counts stages and computes stage-to-stage rates', () => {
+    const f = computeFunnel(rows);
+    expect(f.limit_reached).toBe(4);
+    expect(f.checkout_started).toBe(2);
+    expect(f.converted).toBe(1);
+    expect(f.limit_to_checkout).toBeCloseTo(0.5); // 2/4
+    expect(f.checkout_to_paid).toBeCloseTo(0.5); // 1/2
+  });
+
+  it('avoids divide-by-zero on empty stages', () => {
+    const f = computeFunnel([]);
+    expect(f.limit_to_checkout).toBe(0);
+    expect(f.checkout_to_paid).toBe(0);
   });
 });

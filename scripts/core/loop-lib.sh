@@ -298,6 +298,12 @@ render_live_metrics() {
                     + ": $" + (((.mrr_usd // 0)) | tostring) + " MRR, "
                     + (((.paying // 0)) | tostring) + "/" + (((.signups // 0)) | tostring) + " paying")
              else empty end),
+            (if (.funnel | type) == "object" then
+                "- Funnel (where money leaks): limit_reached "
+                    + (((.funnel.limit_reached // 0)) | tostring)
+                    + " -> checkout_started " + (((.funnel.checkout_started // 0)) | tostring)
+                    + " -> converted " + (((.funnel.converted // 0)) | tostring)
+             else empty end),
             (if .generated_at then "- As of: " + (.generated_at | tostring) else empty end)
         ' "$metrics_file" 2>/dev/null || cat "$metrics_file"
     else

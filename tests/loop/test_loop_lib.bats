@@ -325,6 +325,20 @@ EOF
     [[ "$output" == *"reddit: \$49 MRR"* ]]
 }
 
+@test "render_live_metrics surfaces the funnel when present" {
+    cat > "$WORK/metrics.json" << 'EOF'
+{"mrr_usd":19,"paying_customers":1,"signups":8,"conversion_rate":0.125,
+ "by_source":[],
+ "funnel":{"limit_reached":6,"checkout_started":2,"converted":1,
+           "limit_to_checkout":0.33,"checkout_to_paid":0.5}}
+EOF
+    run render_live_metrics "$WORK/metrics.json"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Funnel (where money leaks)"* ]]
+    [[ "$output" == *"limit_reached 6"* ]]
+    [[ "$output" == *"converted 1"* ]]
+}
+
 # --- engine resolution --------------------------------------------
 
 @test "resolve_cli_bin honors explicit override path" {

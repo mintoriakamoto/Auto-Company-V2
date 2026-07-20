@@ -17,12 +17,47 @@ export interface SourceStat {
   mrr_usd: number;
 }
 
+export interface FunnelCounts {
+  limit_reached: number;
+  checkout_started: number;
+  converted: number;
+}
+
+export interface Funnel extends FunnelCounts {
+  // Rates between stages, 0..1. Tell the loop where the leak is.
+  limit_to_checkout: number; // checkout_started / limit_reached
+  checkout_to_paid: number; // converted / checkout_started
+}
+
 export interface Metrics {
   signups: number;
   paying_customers: number;
   mrr_usd: number;
   conversion_rate: number; // paying / signups, 0..1
   by_source: SourceStat[];
+  funnel: Funnel;
+}
+
+export interface FunnelEventRow {
+  event: string;
+}
+
+const FUNNEL_STAGES = ['limit_reached', 'checkout_started', 'converted'] as const;
+
+export function computeFunnel(rows: FunnelEventRow[]): Funnel {
+  const counts: FunnelCounts = { limit_reached: 0, checkout_started: 0, converted: 0 };
+  for (const row of rows) {
+    if ((FUNNEL_STAGES as readonly string[]).includes(row.event)) {
+      counts[row.event as keyof FunnelCounts] += 1;
+    }
+  }
+  return {
+    ...counts,
+    limit_to_checkout:
+      counts.limit_reached > 0 ? counts.checkout_started / counts.limit_reached : 0,
+    checkout_to_paid:
+      counts.checkout_started > 0 ? counts.converted / counts.checkout_started : 0,
+  };
 }
 
 // Normalize an acquisition source into a short, safe slug. Anything unknown
@@ -45,7 +80,7 @@ function tierPrice(tier: string | null): number {
   return 0;
 }
 
-export function computeMetrics(rows: UserRow[]): Metrics {
+export function computeMetrics(rows: UserRow[], funnelRows: FunnelEventRow[] = []): Metrics {
   const bySource = new Map<string, SourceStat>();
   let signups = 0;
   let paying = 0;
@@ -84,5 +119,6 @@ export function computeMetrics(rows: UserRow[]): Metrics {
     mrr_usd: mrr,
     conversion_rate: signups > 0 ? paying / signups : 0,
     by_source,
+    funnel: computeFunnel(funnelRows),
   };
 }
