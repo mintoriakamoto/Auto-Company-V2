@@ -114,6 +114,34 @@ wrangler r2 bucket create snapog-og-cache
 wrangler deploy
 ```
 
+## Billing (Stripe)
+
+SnapOG monetizes via Stripe subscriptions. The free tier works with no billing
+config; paid upgrades require Stripe to be wired up.
+
+**One-time setup:**
+
+1. In the Stripe dashboard, create two recurring Products/Prices (Pro $19/mo,
+   Business $49/mo) and copy their `price_...` ids into `wrangler.toml`
+   (`STRIPE_PRICE_PRO`, `STRIPE_PRICE_BUSINESS`) and `APP_URL` for the env.
+2. Set the secrets (never committed):
+   ```bash
+   wrangler secret put STRIPE_SECRET_KEY       # sk_live_... or sk_test_...
+   wrangler secret put STRIPE_WEBHOOK_SECRET    # whsec_... from the webhook
+   ```
+3. Add a Stripe webhook endpoint pointing at `https://<your-domain>/billing/webhook`
+   subscribed to `customer.subscription.created`, `customer.subscription.updated`,
+   and `customer.subscription.deleted`.
+
+**Flow:** a signed-in user clicks *Upgrade* on `/dashboard` → `POST /billing/checkout`
+creates a Stripe Checkout Session and redirects there → on payment, Stripe calls
+`/billing/webhook`, whose handler verifies the signature (HMAC-SHA256 via Web
+Crypto), is idempotent per event id, and updates the account's tier and monthly
+limit. Cancellation downgrades to free.
+
+The webhook is the only trusted source of subscription state — the client never
+sets its own tier. Signature verification is unit-tested (`test/stripe.test.ts`).
+
 ## Security
 
 - **Output escaping.** All request- and DB-derived values reflected into HTML

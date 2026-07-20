@@ -17,6 +17,8 @@
 
 优先级：**Ship > Plan > Discuss**
 
+**北极星（唯一硬指标）：MRR（月度经常性收入）。** 一切决策以"最快拿到第一个付费客户、然后提升 MRR"为准绳，而不是 vanity 指标（stars、访问量、注册数）。任何产品在上线时**必须同时具备收款能力**（真实支付/结账链路，如 Stripe），否则不算 ship。没有收款链路的"上线"是半成品。参考 `projects/snapog` 的 `/billing/*` 作为可复制的付费范式。
+
 ### 3. 组队执行
 
 读 `.claude/skills/team/SKILL.md`，按里面的流程组建团队执行任务。每轮选 3-5 个最相关的 agent，不要全部拉上。
@@ -51,8 +53,10 @@
 ## Company State
 - Product: [描述 or TBD]
 - Tech Stack: [or TBD]
-- Revenue: $X
-- Users: X
+- MRR: $X            # 月度经常性收入（唯一北极星指标）
+- Paying Customers: X # 付费客户数
+- Revenue (total): $X
+- Users: X           # 含免费
 
 ## Open Questions
 - [待思考的问题]

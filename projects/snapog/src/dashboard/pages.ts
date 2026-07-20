@@ -698,7 +698,14 @@ export function keyCreatedPage(rawKey: string, email: string, tier: string): str
   return layout('API Key Created', body);
 }
 
-export function dashboardPage(key: ApiKey, recentCount: number): string {
+export function dashboardPage(key: ApiKey, recentCount: number, rawKey = ''): string {
+  const keyField = escapeHtml(rawKey);
+  const upgradeForm = (tier: 'pro' | 'business', label: string): string => `
+    <form method="POST" action="/billing/checkout" style="margin-top:10px;">
+      <input type="hidden" name="key" value="${keyField}" />
+      <input type="hidden" name="tier" value="${tier}" />
+      <button type="submit" class="btn btn-primary" style="width:100%;">${escapeHtml(label)}</button>
+    </form>`;
   const pct = Math.round((key.usage_count / key.monthly_limit) * 100);
   const barClass = pct >= 100 ? 'full' : pct >= 80 ? 'warn' : '';
   const resetDate = new Date(key.usage_reset_at);
@@ -735,7 +742,13 @@ export function dashboardPage(key: ApiKey, recentCount: number): string {
             key.tier === 'free'
               ? `<div style="margin-top:20px;padding-top:20px;border-top:1px solid var(--border);">
                    <p style="font-size:13px;color:var(--text-2);">Need more?</p>
-                   <a href="/register?tier=pro" class="btn btn-primary" style="margin-top:10px;">Upgrade to Pro — $19/mo →</a>
+                   ${upgradeForm('pro', 'Upgrade to Pro — $19/mo →')}
+                   ${upgradeForm('business', 'Go Business — $49/mo →')}
+                 </div>`
+              : key.tier === 'pro'
+              ? `<div style="margin-top:20px;padding-top:20px;border-top:1px solid var(--border);">
+                   <p style="font-size:13px;color:var(--text-2);">Need even more?</p>
+                   ${upgradeForm('business', 'Go Business — $49/mo →')}
                  </div>`
               : ''
           }

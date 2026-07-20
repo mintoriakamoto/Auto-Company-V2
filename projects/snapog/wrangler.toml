@@ -14,7 +14,16 @@ bucket_name = "snapog-og-cache"
 
 [vars]
 ENVIRONMENT = "development"
-# Set AUTH_SECRET via `wrangler secret put AUTH_SECRET` for dashboard cookie signing
+# Public base URL used for Stripe checkout redirects.
+APP_URL = "http://127.0.0.1:8787"
+# Stripe Price ids (NOT secret) — create products/prices in the Stripe
+# dashboard, then paste their price ids here (or per env below).
+STRIPE_PRICE_PRO = ""
+STRIPE_PRICE_BUSINESS = ""
+# Secrets (NEVER committed) — set with:
+#   wrangler secret put STRIPE_SECRET_KEY
+#   wrangler secret put STRIPE_WEBHOOK_SECRET
+#   wrangler secret put AUTH_SECRET
 
 # Named environments do NOT inherit top-level bindings in Wrangler —
 # d1_databases, r2_buckets and vars must be redeclared per environment or the
@@ -23,6 +32,9 @@ ENVIRONMENT = "development"
 name = "snapog-staging"
 [env.staging.vars]
 ENVIRONMENT = "staging"
+APP_URL = "https://snapog-staging.workers.dev"
+STRIPE_PRICE_PRO = ""
+STRIPE_PRICE_BUSINESS = ""
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "snapog-db"
@@ -35,6 +47,9 @@ bucket_name = "snapog-og-cache"
 name = "snapog"
 [env.production.vars]
 ENVIRONMENT = "production"
+APP_URL = "https://snapog.dev"
+STRIPE_PRICE_PRO = ""
+STRIPE_PRICE_BUSINESS = ""
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "snapog-db"

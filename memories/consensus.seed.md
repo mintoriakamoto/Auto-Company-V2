@@ -21,8 +21,11 @@ CEO (Bezos) convenes the Day 0 strategy session: each relevant agent proposes on
 ## Company State
 - Product: TBD
 - Tech Stack: TBD
-- Revenue: $0
+- MRR: $0
+- Paying Customers: 0
+- Revenue (total): $0
 - Users: 0
 
 ## Open Questions
 - What real, monetizable demand can we validate fastest?
+- What is the shortest path to our first paying customer (product + checkout live)?

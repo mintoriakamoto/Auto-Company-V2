@@ -75,6 +75,21 @@ case "${1:-}" in
         fi
 
         echo ""
+        echo "=== Revenue Scoreboard (North Star: MRR) ==="
+        consensus_file="$PROJECT_DIR/memories/consensus.md"
+        if [ -f "$consensus_file" ]; then
+            # Surface the money metrics from Company State so the only goal
+            # that matters is visible at a glance.
+            grep -iE '^- (MRR|Paying Customers|Revenue|Users)' "$consensus_file" \
+                | sed 's/^- /  /' \
+                || echo "  (no revenue metrics in consensus yet)"
+            total_cost=$(grep -E '^TOTAL_COST_USD=' "$STATE_FILE" 2>/dev/null | tail -n1 | cut -d= -f2)
+            [ -n "$total_cost" ] && echo "  Spend to date: \$$total_cost"
+        else
+            echo "  (no consensus file yet)"
+        fi
+
+        echo ""
         echo "=== Latest Consensus ==="
         if [ -f "$PROJECT_DIR/memories/consensus.md" ]; then
             head -30 "$PROJECT_DIR/memories/consensus.md"

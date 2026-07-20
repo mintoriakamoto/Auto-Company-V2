@@ -48,6 +48,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Unit tests
+        run: npm test
+
       - name: Wrangler build (dry-run, default env)
         run: npx wrangler deploy --dry-run --outdir /tmp/snapog-build
 

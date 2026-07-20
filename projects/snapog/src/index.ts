@@ -10,8 +10,13 @@ import {
   dashboardPage,
   errorPage,
 } from './dashboard/pages';
-import type { ApiKey, Env, OGParams, Tier } from './types';
-import { TIER_LIMITS } from './types';
+import type { ApiKey, Env, OGParams, Tier, User } from './types';
+import { TIER_LIMITS, isPaidTier, priceIdToTier, tierToPriceId } from './types';
+import {
+  createCheckoutSession,
+  createStripeCustomer,
+  verifyStripeSignature,
+} from './billing/stripe';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -301,7 +306,180 @@ app.get('/dashboard', async c => {
     .bind(refreshed.id, yesterday)
     .first<{ cnt: number }>();
 
-  return htmlResponse(dashboardPage(refreshed, recent?.cnt ?? 0));
+  return htmlResponse(dashboardPage(refreshed, recent?.cnt ?? 0, rawKey));
+});
+
+// ── Billing (Stripe) ────────────────────────────────────────────────────────
+
+// Apply a tier to a user and all their API keys (single source of truth for
+// what "being on a plan" means to the metering path).
+async function applyTierToUser(
+  db: D1Database,
+  userId: string,
+  tier: Tier,
+  status: string,
+  subscriptionId: string | null
+): Promise<void> {
+  await db.batch([
+    db
+      .prepare(
+        'UPDATE users SET billing_tier = ?, billing_status = ?, stripe_subscription_id = ? WHERE id = ?'
+      )
+      .bind(tier, status, subscriptionId, userId),
+    db
+      .prepare('UPDATE api_keys SET tier = ?, monthly_limit = ? WHERE user_id = ?')
+      .bind(tier, TIER_LIMITS[tier], userId),
+  ]);
+}
+
+// Start a checkout: resolve the caller's key -> user, ensure a Stripe customer,
+// and redirect to a hosted Checkout Session for the requested paid tier.
+app.post('/billing/checkout', async c => {
+  if (!c.env.STRIPE_SECRET_KEY) {
+    return htmlResponse(errorPage(503, 'Billing is not configured'), 503);
+  }
+
+  let rawKey: string, tier: string;
+  try {
+    const form = await c.req.formData();
+    rawKey = (form.get('key') as string ?? '').trim();
+    tier = (form.get('tier') as string ?? '').trim();
+  } catch {
+    return htmlResponse(errorPage(400, 'Invalid form data'), 400);
+  }
+
+  if (!isPaidTier(tier)) {
+    return htmlResponse(errorPage(400, 'Unknown plan'), 400);
+  }
+  const priceId = tierToPriceId(c.env, tier);
+  if (!priceId) {
+    return htmlResponse(errorPage(503, 'This plan is not available yet'), 503);
+  }
+
+  const apiKey = await resolveApiKey(c.env.DB, rawKey);
+  if (!apiKey) {
+    return htmlResponse(errorPage(404, 'API key not found'), 404);
+  }
+  const user = await c.env.DB
+    .prepare('SELECT * FROM users WHERE id = ?')
+    .bind(apiKey.user_id)
+    .first<User>();
+  if (!user) {
+    return htmlResponse(errorPage(404, 'Account not found'), 404);
+  }
+
+  // Ensure a Stripe customer, persisting it so webhooks can map back to us.
+  let customerId = user.stripe_customer_id ?? '';
+  if (!customerId) {
+    customerId = await createStripeCustomer(c.env.STRIPE_SECRET_KEY, user.email, user.id);
+    await c.env.DB
+      .prepare('UPDATE users SET stripe_customer_id = ? WHERE id = ?')
+      .bind(customerId, user.id)
+      .run();
+  }
+
+  const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
+  const dashUrl = `${base}/dashboard?key=${encodeURIComponent(rawKey)}`;
+  try {
+    const checkoutUrl = await createCheckoutSession({
+      secretKey: c.env.STRIPE_SECRET_KEY,
+      priceId,
+      customerId,
+      clientReferenceId: user.id,
+      successUrl: `${dashUrl}&upgraded=1`,
+      cancelUrl: dashUrl,
+    });
+    return c.redirect(checkoutUrl, 303);
+  } catch (err) {
+    console.error('Checkout creation failed:', err);
+    return htmlResponse(errorPage(502, 'Could not start checkout — please try again'), 502);
+  }
+});
+
+// Stripe webhook: the ONLY trusted source of subscription state. Verifies the
+// signature, is idempotent per event id, and drives the account's tier.
+app.post('/billing/webhook', async c => {
+  const secret = c.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) {
+    return c.json({ error: 'Billing not configured' }, 503);
+  }
+
+  const payload = await c.req.text();
+  const ok = await verifyStripeSignature({
+    payload,
+    header: c.req.header('stripe-signature') ?? null,
+    secret,
+  });
+  if (!ok) {
+    return c.json({ error: 'Invalid signature' }, 400);
+  }
+
+  let event: {
+    id?: string;
+    type?: string;
+    data?: { object?: Record<string, unknown> };
+  };
+  try {
+    event = JSON.parse(payload);
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400);
+  }
+  if (!event.id || !event.type) {
+    return c.json({ error: 'Malformed event' }, 400);
+  }
+
+  // Idempotency: record the event id first; a duplicate delivery no-ops.
+  const insert = await c.env.DB
+    .prepare('INSERT INTO billing_events (id, type) VALUES (?, ?) ON CONFLICT(id) DO NOTHING')
+    .bind(event.id, event.type)
+    .run();
+  if (insert.meta.changes === 0) {
+    return c.json({ received: true, duplicate: true });
+  }
+
+  const obj = event.data?.object ?? {};
+  const findUserByCustomer = async (customerId: unknown): Promise<User | null> => {
+    if (typeof customerId !== 'string' || !customerId) return null;
+    return c.env.DB
+      .prepare('SELECT * FROM users WHERE stripe_customer_id = ?')
+      .bind(customerId)
+      .first<User>();
+  };
+
+  try {
+    switch (event.type) {
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated': {
+        const user = await findUserByCustomer(obj.customer);
+        if (user) {
+          const items = obj.items as { data?: Array<{ price?: { id?: string } }> } | undefined;
+          const priceId = items?.data?.[0]?.price?.id;
+          const tier = priceIdToTier(c.env, priceId);
+          const status = typeof obj.status === 'string' ? obj.status : 'active';
+          const active = status === 'active' || status === 'trialing';
+          const subId = typeof obj.id === 'string' ? obj.id : null;
+          // Grant the tier only while the subscription is in good standing.
+          await applyTierToUser(c.env.DB, user.id, active && tier ? tier : 'free', status, subId);
+        }
+        break;
+      }
+      case 'customer.subscription.deleted': {
+        const user = await findUserByCustomer(obj.customer);
+        if (user) {
+          await applyTierToUser(c.env.DB, user.id, 'free', 'canceled', null);
+        }
+        break;
+      }
+      default:
+        // Other events are recorded (for audit) but need no action.
+        break;
+    }
+  } catch (err) {
+    console.error(`Webhook handler failed for ${event.type}:`, err);
+    return c.json({ error: 'Handler error' }, 500);
+  }
+
+  return c.json({ received: true });
 });
 
 // ── Health / ops ──────────────────────────────────────────────────────────────
