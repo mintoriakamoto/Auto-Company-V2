@@ -337,6 +337,18 @@ const CSS = `
   }
 `;
 
+// Escape untrusted values before interpolating into HTML. Every value that
+// originates from a request (query params, form fields, Host header) or the
+// database must pass through this to prevent reflected/stored XSS.
+export function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function layout(title: string, body: string, extraHead = ''): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -375,8 +387,9 @@ function footer(): string {
   </footer>`;
 }
 
-export function landingPage(host: string): string {
-  void host; // used in template strings below
+export function landingPage(rawHost: string): string {
+  // Host is derived from the request and reflected into the page — escape it.
+  const host = escapeHtml(rawHost);
 
   const body = `
   ${nav('/')}
@@ -594,11 +607,11 @@ export function registerPage(error?: string, tier?: string): string {
       <h1 class="section-h2">Start generating</h1>
       <p class="section-sub" style="margin-bottom:32px;">Enter your email to receive your API key instantly. No password. No credit card for free tier.</p>
 
-      ${error ? `<div class="alert alert-error">${error}</div>` : ''}
+      ${error ? `<div class="alert alert-error">${escapeHtml(error)}</div>` : ''}
 
       <div class="card">
         <form method="POST" action="/register">
-          <input type="hidden" name="tier" value="${tier ?? 'free'}" />
+          <input type="hidden" name="tier" value="${escapeHtml(tier ?? 'free')}" />
           <div class="form-group">
             <label class="form-label" for="email">EMAIL ADDRESS</label>
             <input class="form-input" type="email" name="email" id="email" placeholder="you@example.com" required autocomplete="email" />
@@ -631,7 +644,7 @@ export function keyCreatedPage(rawKey: string, email: string, tier: string): str
   <section class="section">
     <div class="container" style="max-width:600px;">
       <div class="alert alert-success">
-        ✓ API key created for ${email}
+        ✓ API key created for ${escapeHtml(email)}
       </div>
       <p class="section-title">Your API Key</p>
       <h1 class="section-h2">Save this key now</h1>
@@ -640,7 +653,7 @@ export function keyCreatedPage(rawKey: string, email: string, tier: string): str
       </p>
 
       <div class="card">
-        <p class="card-title">API KEY — ${tier.toUpperCase()}</p>
+        <p class="card-title">API KEY — ${escapeHtml(tier.toUpperCase())}</p>
         <div class="api-key-row">
           <div class="api-key-display">
             <span class="key-val" id="api-key">${rawKey}</span>
@@ -692,7 +705,8 @@ export function dashboardPage(key: ApiKey, recentCount: number): string {
   const nextReset = new Date(resetDate.getFullYear(), resetDate.getMonth() + 1, 1)
     .toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-  const tierBadge = `<span class="tier-badge tier-${key.tier}">${key.tier}</span>`;
+  const safeTier = escapeHtml(key.tier);
+  const tierBadge = `<span class="tier-badge tier-${safeTier}">${safeTier}</span>`;
 
   const body = `
   ${nav()}
@@ -700,7 +714,7 @@ export function dashboardPage(key: ApiKey, recentCount: number): string {
     <div class="dash-layout">
       <div class="dash-header">
         <h1>Dashboard ${tierBadge}</h1>
-        <p>API key: <code style="font-family:var(--font-mono);font-size:13px;color:var(--text-2);">${key.key_prefix}••••••••••••••••••••</code></p>
+        <p>API key: <code style="font-family:var(--font-mono);font-size:13px;color:var(--text-2);">${escapeHtml(key.key_prefix)}••••••••••••••••••••</code></p>
       </div>
 
       <div class="dash-grid">
@@ -752,7 +766,7 @@ export function dashboardPage(key: ApiKey, recentCount: number): string {
               <span class="code-block-lang">HTML / meta tags</span>
             </div>
             <pre><span class="c-key">&lt;meta</span> <span class="c-val">property=</span><span class="c-str">"og:image"</span>
-      <span class="c-val">content=</span><span class="c-str">"https://snapog.dev/og?title=YOUR_TITLE&amp;key=${key.key_prefix}..."</span> <span class="c-key">/&gt;</span></pre>
+      <span class="c-val">content=</span><span class="c-str">"https://snapog.dev/og?title=YOUR_TITLE&amp;key=${escapeHtml(key.key_prefix)}..."</span> <span class="c-key">/&gt;</span></pre>
           </div>
           <div class="code-block" style="margin-top:12px;">
             <div class="code-block-header">
@@ -761,7 +775,7 @@ export function dashboardPage(key: ApiKey, recentCount: number): string {
               </div>
               <span class="code-block-lang">cURL test</span>
             </div>
-            <pre><span class="c-key">curl</span> <span class="c-str">"https://snapog.dev/og?title=My+Blog+Post&amp;domain=myblog.com&amp;key=${key.key_prefix}..."</span> \
+            <pre><span class="c-key">curl</span> <span class="c-str">"https://snapog.dev/og?title=My+Blog+Post&amp;domain=myblog.com&amp;key=${escapeHtml(key.key_prefix)}..."</span> \
   <span class="c-val">--output</span> og.png && <span class="c-key">open</span> og.png</pre>
           </div>
         </div>
@@ -780,7 +794,7 @@ export function errorPage(code: number, message: string): string {
   <section class="section">
     <div class="container" style="text-align:center;max-width:480px;">
       <p style="font-family:var(--font-mono);font-size:80px;font-weight:700;color:var(--border);line-height:1;">${code}</p>
-      <h1 style="font-size:24px;margin:16px 0 12px;">${message}</h1>
+      <h1 style="font-size:24px;margin:16px 0 12px;">${escapeHtml(message)}</h1>
       <p style="color:var(--text-2);margin-bottom:32px;">Something went wrong. Try again or check the docs.</p>
       <a href="/" class="btn btn-ghost">← Back to home</a>
     </div>

@@ -36,7 +36,12 @@ function generateRawKey(): string {
 function htmlResponse(html: string, status = 200): Response {
   return new Response(html, {
     status,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      // API keys travel in query strings (?key=...); suppress the Referer so
+      // they are not leaked to third parties when users click outbound links.
+      'Referrer-Policy': 'no-referrer',
+    },
   });
 }
 
@@ -82,8 +87,13 @@ async function recordUsage(
 ): Promise<void> {
   const eventId = crypto.randomUUID();
   await db.batch([
+    // Conditional increment so concurrent requests cannot push usage_count
+    // past monthly_limit — the stored counter can never run away even though
+    // the pre-generation check and this increment are separate steps.
     db
-      .prepare('UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ?')
+      .prepare(
+        'UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ? AND usage_count < monthly_limit'
+      )
       .bind(key.id),
     db
       .prepare(
@@ -170,8 +180,16 @@ app.get('/og', async c => {
   }
 
   // ── Generate image ──
-  const imageResponse = await generateOGImage(params, watermark);
-  const imageBuffer = await imageResponse.arrayBuffer();
+  let imageBuffer: ArrayBuffer;
+  try {
+    const imageResponse = await generateOGImage(params, watermark);
+    imageBuffer = await imageResponse.arrayBuffer();
+  } catch (err) {
+    // Never return an HTML error body to a client that requested image/png
+    // (a scraper or <img> tag). Respond JSON so the failure is unambiguous.
+    console.error('OG image generation failed:', err);
+    return c.json({ error: 'Failed to generate image' }, 500);
+  }
 
   // Store in R2 (fire-and-forget, don't block response)
   c.executionCtx.waitUntil(
@@ -198,7 +216,10 @@ app.get('/og', async c => {
 
 // ── Registration ──────────────────────────────────────────────────────────────
 app.get('/register', c => {
-  const tier = c.req.query('tier');
+  // Validate tier against the whitelist before it is reflected into the page.
+  const requested = c.req.query('tier');
+  const validTiers: Tier[] = ['free', 'pro', 'business'];
+  const tier = validTiers.includes(requested as Tier) ? requested : undefined;
   return htmlResponse(registerPage(undefined, tier));
 });
 

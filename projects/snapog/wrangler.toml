@@ -16,12 +16,29 @@ bucket_name = "snapog-og-cache"
 ENVIRONMENT = "development"
 # Set AUTH_SECRET via `wrangler secret put AUTH_SECRET` for dashboard cookie signing
 
+# Named environments do NOT inherit top-level bindings in Wrangler —
+# d1_databases, r2_buckets and vars must be redeclared per environment or the
+# deployed Worker ships with no DB/OG_CACHE and 500s on every data route.
 [env.staging]
 name = "snapog-staging"
 [env.staging.vars]
 ENVIRONMENT = "staging"
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "snapog-db"
+database_id = "placeholder-set-after-wrangler-d1-create"
+[[env.staging.r2_buckets]]
+binding = "OG_CACHE"
+bucket_name = "snapog-og-cache"
 
 [env.production]
 name = "snapog"
 [env.production.vars]
 ENVIRONMENT = "production"
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "snapog-db"
+database_id = "placeholder-set-after-wrangler-d1-create"
+[[env.production.r2_buckets]]
+binding = "OG_CACHE"
+bucket_name = "snapog-og-cache"

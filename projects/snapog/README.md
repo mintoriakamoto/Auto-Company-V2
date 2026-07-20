@@ -114,10 +114,27 @@ wrangler r2 bucket create snapog-og-cache
 wrangler deploy
 ```
 
+## Security
+
+- **Output escaping.** All request- and DB-derived values reflected into HTML
+  pages pass through `escapeHtml()` (`src/dashboard/pages.ts`); the `tier` query
+  param is also validated against the tier whitelist before rendering.
+- **Referer suppression.** HTML responses send `Referrer-Policy: no-referrer` so
+  API keys carried in `?key=` query strings are not leaked via the `Referer`
+  header to third parties.
+- **Known limitation — keys in public URLs (by design).** The current auth model
+  puts the raw key in the request URL (`/og?key=...`), and the documented
+  `og:image` integration embeds it in public page source, so a key used this way
+  is discoverable and its monthly quota can be exhausted by others. Mitigations
+  on the roadmap: HMAC-signed request URLs (the reserved `AUTH_SECRET` secret is
+  intended for this), domain-scoped tokens, and/or a `Referer`/origin allowlist
+  enforced per key. Until then, treat keys as low-trust, rate-limited tokens,
+  not secrets.
+
 ## Tech Stack
 
 - [Cloudflare Workers](https://workers.cloudflare.com/) — edge compute
 - [Hono](https://hono.dev/) — HTTP framework
-- [workers-og](https://github.com/nicholasgasior/workers-og) — OG image generation (Satori-based)
+- [workers-og](https://github.com/kvnang/workers-og) — OG image generation (Satori-based)
 - [Cloudflare D1](https://developers.cloudflare.com/d1/) — SQLite for usage tracking
 - [Cloudflare R2](https://developers.cloudflare.com/r2/) — image cache storage
