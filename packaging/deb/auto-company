@@ -42,6 +42,7 @@ Loop control (run inside the resolved workspace):
   last                   Show last cycle's full output
   cycles                 Show cycle history summary
   monitor                Tail live logs (Ctrl+C to exit)
+  dashboard [args]       Start the local web dashboard (default port 8787)
 
 Daemon (systemd --user):
   install-daemon         Install and enable auto-company.service
@@ -143,6 +144,7 @@ run_in_workspace() {
 }
 
 main() {
+    local ws
     local cmd="${1:-help}"
     if [ $# -gt 0 ]; then
         shift
@@ -156,8 +158,13 @@ main() {
         last)              run_in_workspace scripts/core/monitor.sh --last ;;
         cycles)            run_in_workspace scripts/core/monitor.sh --cycles ;;
         monitor)           run_in_workspace scripts/core/monitor.sh "$@" ;;
-        install-daemon)    run_in_workspace scripts/wsl/install-wsl-daemon.sh "$@" ;;
-        uninstall-daemon)  run_in_workspace scripts/wsl/uninstall-wsl-daemon.sh "$@" ;;
+        dashboard)
+            ws="$(require_workspace)"
+            cd "$ws"
+            exec python3 dashboard/server.py "$@"
+            ;;
+        install-daemon)    run_in_workspace scripts/linux/install-linux-daemon.sh "$@" ;;
+        uninstall-daemon)  run_in_workspace scripts/linux/uninstall-linux-daemon.sh "$@" ;;
         version|--version|-V) version ;;
         help|--help|-h)    usage ;;
         *)

@@ -46,7 +46,7 @@ cycles: ## Show cycle history summary
 monitor: ## Tail live logs (Ctrl+C to exit)
 	./scripts/core/monitor.sh
 
-dashboard: ## Start local dashboard server (Windows host or macOS host)
+dashboard: ## Start local dashboard server (Windows, macOS, or Linux host)
 	python3 dashboard/server.py
 
 # === Daemon (macOS launchd / Linux systemd --user) ===
@@ -55,14 +55,14 @@ install: ## Install daemon (macOS launchd or Linux/WSL systemd --user)
 ifeq ($(UNAME_S),Darwin)
 	./scripts/macos/install-daemon.sh
 else
-	./scripts/wsl/install-wsl-daemon.sh
+	./scripts/linux/install-linux-daemon.sh
 endif
 
 uninstall: ## Remove daemon (macOS launchd or Linux/WSL systemd --user)
 ifeq ($(UNAME_S),Darwin)
 	./scripts/macos/install-daemon.sh --uninstall
 else
-	./scripts/wsl/uninstall-wsl-daemon.sh
+	./scripts/linux/uninstall-linux-daemon.sh
 endif
 
 pause: ## Pause daemon (no auto-restart)
@@ -101,7 +101,7 @@ build: ## Build Ubuntu amd64 release artifacts (.deb + tarball) into dist/
 # === Maintenance ===
 
 clean-logs: ## Remove all cycle logs
-	rm -f logs/cycle-*.log logs/auto-loop.log.old
+	rm -f logs/cycle-*.log logs/auto-loop.log.*
 	@echo "Cycle logs cleaned."
 
 reset-consensus: ## Reset consensus to initial Day 0 state (CAUTION)

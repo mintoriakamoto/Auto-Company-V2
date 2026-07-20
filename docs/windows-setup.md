@@ -106,7 +106,7 @@ wsl -d Ubuntu bash -lc 'codex --version; command -v codex'
 - `ClaudePermissionMode`：默认 `bypassPermissions`
 
 脚本定位说明：
-- 所有脚本实现位于 `scripts/windows/`、`scripts/core/`、`scripts/wsl/`、`scripts/macos/`
+- 所有脚本实现位于 `scripts/windows/`、`scripts/core/`、`scripts/linux/`（`scripts/wsl/` 为兼容包装层）、`scripts/macos/`
 - 日常执行入口也统一使用 `scripts/` 下脚本
 - 如需维护逻辑，请直接修改 `scripts/` 下对应实现文件
 

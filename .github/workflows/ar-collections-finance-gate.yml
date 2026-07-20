@@ -93,6 +93,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$CI_ARTIFACT_DIR/import" "$CI_ARTIFACT_DIR/archive" "$CI_ARTIFACT_DIR/stubs" "$CI_ARTIFACT_DIR/debug" "$CI_ARTIFACT_DIR/close-loop/result-json"
+          if [[ "${{ steps.detect_project_workspace.outputs.project_exists }}" == "true" ]]; then
+          # Stub metadata feeding the close-loop script integration test.
           node - "$FINANCE_METADATA_PATH" "$CLOSE_LOOP_RUN_ID" <<'NODE'
             const fs = require("fs");
             const [metadataPath, closeLoopRunId] = process.argv.slice(2);
@@ -105,6 +107,21 @@ jobs:
             };
             fs.writeFileSync(metadataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
           NODE
+          else
+          # Fallback mode ran no real export: record honest placeholders,
+          # never fabricated success evidence.
+          node - "$FINANCE_METADATA_PATH" <<'NODE'
+            const fs = require("fs");
+            const [metadataPath] = process.argv.slice(2);
+            const payload = {
+              ok: false,
+              finance_metadata_arrived: false,
+              export_job_url: "PENDING_FINANCE_METADATA",
+              export_screenshot_ref: "PENDING_FINANCE_METADATA"
+            };
+            fs.writeFileSync(metadataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+          NODE
+          fi
           if [[ "${{ steps.detect_project_workspace.outputs.project_exists }}" == "true" && -f "projects/ar-collections-assistant/scripts/quickbooks-week1-finance-bundle-close-loop.sh" ]]; then
             printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'exit 0' > "$CI_ARTIFACT_DIR/stubs/arrival.sh"
             printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'exit 0' > "$CI_ARTIFACT_DIR/stubs/archive.sh"
@@ -125,18 +142,20 @@ jobs:
               const [resultPath, runId, strictTokenRaw] = process.argv.slice(1);
               const token = String(strictTokenRaw || "").trim().toLowerCase();
               const strictMode = ["1", "true", "yes", "y", "on", "strict", "enabled"].includes(token);
+              // No gate actually ran in fallback mode, so report "skipped"
+              // with placeholder anchors instead of fabricated evidence.
               const anchor = {
-                export_job_url: `https://ci.finance.example/export/jobs/${runId}`,
-                export_screenshot_ref: `ci://finance/${runId}/export.png`
+                export_job_url: "PENDING_FINANCE_METADATA",
+                export_screenshot_ref: "PENDING_FINANCE_METADATA"
               };
               const payload = {
                 run_id: runId,
-                status: "success",
+                status: "skipped",
                 stage: "finance_gate_fallback",
                 exit_code: 0,
                 mapped_from: "finance-bundle-gate:fallback",
                 finance_metadata_strict_mode: strictMode,
-                finance_metadata_anchor_ready: true,
+                finance_metadata_anchor_ready: false,
                 finance_metadata_anchor: anchor
               };
               fs.mkdirSync(path.dirname(resultPath), { recursive: true });

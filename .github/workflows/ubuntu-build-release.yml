@@ -54,16 +54,11 @@ jobs:
       - name: shellcheck
         run: |
           set -euo pipefail
-          # Existing runtime scripts carry legacy style findings; keep them
-          # visible without failing the build. New packaging scripts are
-          # held to error-free.
           shellcheck -S error packaging/build-release.sh packaging/deb/auto-company
-          find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning || {
-            echo "::warning::shellcheck reported findings in scripts/ (non-blocking)"
-          }
+          find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning
 
   test:
-    name: Dashboard Tests (ubuntu 26.04)
+    name: Unit Tests (ubuntu 26.04)
     runs-on: ubuntu-latest
     container: ubuntu:26.04
     timeout-minutes: 10
@@ -71,13 +66,16 @@ jobs:
       - name: Install prerequisites
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends python3 git ca-certificates
+          apt-get install -y --no-install-recommends python3 git ca-certificates bats
 
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run unit tests
+      - name: Run dashboard unit tests
         run: python3 -m unittest discover -s tests -v
+
+      - name: Run loop-core bats tests
+        run: bats tests/loop/
 
   build:
     name: Build .deb + tarball (ubuntu 26.04, amd64)

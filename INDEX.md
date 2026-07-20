@@ -10,7 +10,7 @@
 
 - `scripts/windows/`: Windows 控制、保活、自启脚本实现
 - `scripts/core/`: 主循环与核心控制脚本实现
-- `scripts/wsl/`: WSL / 原生 Linux `systemd --user` 守护脚本实现
+- `scripts/linux/`: 原生 Linux / WSL `systemd --user` 守护脚本实现（`scripts/wsl/` 保留兼容包装层）
 - `scripts/macos/`: macOS `launchd` 守护脚本实现
 - `packaging/`: Ubuntu 26.04 (amd64) 构建与发布（`.deb` + tarball），入口 `packaging/build-release.sh`（`make build`）
 
@@ -54,9 +54,10 @@
 | 自启 | `scripts/windows/enable-autostart-win.ps1` | 创建登录自启任务 |
 | 自启 | `scripts/windows/disable-autostart-win.ps1` | 删除登录自启任务 |
 | 自启 | `scripts/windows/autostart-status-win.ps1` | 查询自启任务状态 |
-| 守护 | `scripts/wsl/install-wsl-daemon.sh` | 安装并启用 `auto-company.service` |
-| 守护 | `scripts/wsl/uninstall-wsl-daemon.sh` | 卸载 WSL daemon |
-| 守护 | `scripts/wsl/wsl-daemon-status.sh` | 查询 WSL daemon 状态 |
+| 守护 | `scripts/linux/install-linux-daemon.sh` | 安装并启用 `auto-company.service`（原生 Linux / WSL） |
+| 守护 | `scripts/linux/uninstall-linux-daemon.sh` | 卸载 Linux daemon |
+| 守护 | `scripts/linux/linux-daemon-status.sh` | 查询 Linux daemon 状态 |
+| 守护 | `scripts/wsl/*.sh` | 兼容包装层，转发到 `scripts/linux/` |
 | 守护 | `scripts/macos/install-daemon.sh` | macOS launchd 安装/卸载 |
 | 核心 | `scripts/core/auto-loop.sh` | 主循环执行、熔断、日志、共识更新 |
 | 核心 | `scripts/core/monitor.sh` | 核心状态/日志输出 |
@@ -69,7 +70,7 @@
 
 1. 先看 `scripts/windows/status-win.ps1`
 2. 再看 `scripts/windows/dashboard-win.ps1` 或 `scripts/windows/monitor-win.ps1`
-3. 守护异常看 `scripts/wsl/wsl-daemon-status.sh`
+3. 守护异常看 `scripts/linux/linux-daemon-status.sh`
 4. 自启异常看 `scripts/windows/autostart-status-win.ps1`（权限问题优先检查管理员 PowerShell）
 
 ## 维护规则

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local dashboard server for Auto Company (Windows + WSL + macOS runtime)."""
+"""Local dashboard server for Auto Company (Windows + WSL + macOS + Linux runtime)."""
 
 from __future__ import annotations
 
@@ -29,12 +29,17 @@ MACOS_STATUS_SCRIPT = REPO_ROOT / "scripts" / "macos" / "status-mac.sh"
 MACOS_START_SCRIPT = REPO_ROOT / "scripts" / "macos" / "install-daemon.sh"
 MACOS_STOP_SCRIPT = REPO_ROOT / "scripts" / "core" / "stop-loop.sh"
 
+LINUX_STATUS_SCRIPT = REPO_ROOT / "scripts" / "linux" / "status-linux.sh"
+LINUX_START_SCRIPT = REPO_ROOT / "scripts" / "linux" / "start-linux.sh"
+LINUX_STOP_SCRIPT = REPO_ROOT / "scripts" / "linux" / "stop-linux.sh"
+
 LOG_FILE = REPO_ROOT / "logs" / "auto-loop.log"
 STATE_FILE = REPO_ROOT / ".auto-loop-state"
 CONSENSUS_FILE = REPO_ROOT / "memories" / "consensus.md"
 
 WINDOWS_HOST = "windows"
 MACOS_HOST = "macos"
+LINUX_HOST = "linux"
 
 
 def ps_quote(value: str) -> str:
@@ -47,8 +52,11 @@ def detect_host_kind(system_name: str | None = None) -> str:
         return WINDOWS_HOST
     if name == "Darwin":
         return MACOS_HOST
+    if name == "Linux":
+        return LINUX_HOST
     raise RuntimeError(
-        "Dashboard only supports Windows hosts (with WSL backend) and macOS hosts."
+        "Dashboard only supports Windows hosts (with WSL backend), macOS hosts, "
+        "and Linux hosts."
     )
 
 
@@ -145,10 +153,21 @@ def get_host_profile(system_name: str | None = None) -> dict[str, Any]:
             "stop_script": WINDOWS_STOP_SCRIPT,
             "stop_args": None,
         }
+    if host == LINUX_HOST:
+        return {
+            "host": host,
+            "runner": run_shell_script,
+            "parser": parse_sectioned_status_output,
+            "status_script": LINUX_STATUS_SCRIPT,
+            "start_script": LINUX_START_SCRIPT,
+            "start_args": None,
+            "stop_script": LINUX_STOP_SCRIPT,
+            "stop_args": None,
+        }
     return {
         "host": host,
         "runner": run_shell_script,
-        "parser": parse_macos_status_output,
+        "parser": parse_sectioned_status_output,
         "status_script": MACOS_STATUS_SCRIPT,
         "start_script": MACOS_START_SCRIPT,
         "start_args": None,
@@ -339,7 +358,8 @@ def parse_windows_status_output(raw: str) -> dict[str, Any]:
     return parsed
 
 
-def parse_macos_status_output(raw: str) -> dict[str, Any]:
+def parse_sectioned_status_output(raw: str) -> dict[str, Any]:
+    """Parse the sectioned status format shared by status-mac.sh and status-linux.sh."""
     sections = parse_sections(raw)
     parsed = blank_parsed()
 
@@ -376,6 +396,10 @@ def parse_macos_status_output(raw: str) -> dict[str, Any]:
     parsed["consensusPreview"] = "\n".join(sections.get("Latest Consensus", [])).strip()
     parsed["recentLog"] = "\n".join(sections.get("Recent Log", [])).strip()
     return parsed
+
+
+# Backwards-compatible alias (the sectioned format debuted on macOS).
+parse_macos_status_output = parse_sectioned_status_output
 
 
 def read_state_file_pairs() -> dict[str, str]:

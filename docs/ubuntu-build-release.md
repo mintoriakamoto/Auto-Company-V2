@@ -49,7 +49,8 @@ is **not** packaged — install and authenticate it separately.
 
 1. **lint** — `bash -n` on all shell scripts; `shellcheck` (blocking for
    `packaging/`, advisory for legacy `scripts/`).
-2. **test** — dashboard unit tests inside an `ubuntu:26.04` container.
+2. **test** — dashboard unit tests (`unittest`) and loop-core tests
+   (`bats tests/loop/`) inside an `ubuntu:26.04` container.
 3. **build** — builds the `.deb` + tarball inside an `ubuntu:26.04` container
    (asserts `VERSION_ID=26.04`), runs `lintian` (advisory), uploads `dist/*`.
 4. **smoke** — fresh `ubuntu:26.04` container: verifies checksums, installs the

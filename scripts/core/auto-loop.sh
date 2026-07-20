@@ -28,6 +28,8 @@
 #   COOLDOWN_SECONDS=300        # Cooldown after circuit break
 #   LIMIT_WAIT_SECONDS=3600     # Wait on usage limit
 #   MAX_LOGS=200                # Max cycle logs to keep
+#   MAIN_LOG_KEEP=3             # Rotated main-log generations to keep
+#   CONSENSUS_HISTORY_KEEP=50   # Consensus snapshots to keep (0 = off)
 #   AUTO_LOOP_PROTECT_GITIGNORE=1
 #                               # Restore .gitignore if a cycle mutates it
 # ============================================================
@@ -59,6 +61,9 @@ MAX_CONSECUTIVE_ERRORS="${MAX_CONSECUTIVE_ERRORS:-5}"
 COOLDOWN_SECONDS="${COOLDOWN_SECONDS:-300}"
 LIMIT_WAIT_SECONDS="${LIMIT_WAIT_SECONDS:-3600}"
 MAX_LOGS="${MAX_LOGS:-200}"
+MAIN_LOG_KEEP="${MAIN_LOG_KEEP:-3}"
+CONSENSUS_HISTORY_KEEP="${CONSENSUS_HISTORY_KEEP:-50}"
+CONSENSUS_HISTORY_DIR="$PROJECT_DIR/memories/history"
 AUTO_LOOP_PROTECT_GITIGNORE="${AUTO_LOOP_PROTECT_GITIGNORE:-1}"
 RESOLVED_ENGINE_BIN=""
 
@@ -72,315 +77,16 @@ export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 
 # === Functions ===
 
-log() {
-    local timestamp
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    local msg="[$timestamp] $1"
-    echo "$msg" >> "$LOG_DIR/auto-loop.log"
-    if [ -t 1 ]; then
-        echo "$msg"
-    fi
-}
-
-log_cycle() {
-    local cycle_num=$1
-    local status=$2
-    local msg=$3
-    local timestamp
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] Cycle #$cycle_num [$status] $msg" >> "$LOG_DIR/auto-loop.log"
-    if [ -t 1 ]; then
-        echo "[$timestamp] Cycle #$cycle_num [$status] $msg"
-    fi
-}
-
-check_usage_limit() {
-    local output="$1"
-    if echo "$output" | grep -qi "usage limit\|rate limit\|too many requests\|resource_exhausted\|overloaded\|quota\|429\|billing\|insufficient credits"; then
-        return 0
-    fi
-    return 1
-}
-
-check_stop_requested() {
-    if [ -f "$PROJECT_DIR/.auto-loop-stop" ]; then
-        rm -f "$PROJECT_DIR/.auto-loop-stop"
-        return 0
-    fi
-    return 1
-}
-
-save_state() {
-    cat > "$STATE_FILE" << EOF
-LOOP_COUNT=$loop_count
-ERROR_COUNT=$error_count
-LAST_RUN=$(date '+%Y-%m-%d %H:%M:%S')
-STATUS=$1
-MODEL=$MODEL_LABEL
-ENGINE=$ENGINE
-EOF
-}
+# Shared helpers (logging, guards, consensus, cost accounting, engine
+# resolution) live in loop-lib.sh so they can be unit-tested with bats.
+# shellcheck source=scripts/core/loop-lib.sh
+. "$SCRIPT_DIR/loop-lib.sh"
 
 cleanup() {
     log "=== Auto Loop Shutting Down (PID $$) ==="
     rm -f "$PID_FILE"
     save_state "stopped"
     exit 0
-}
-
-snapshot_gitignore() {
-    if [ "$AUTO_LOOP_PROTECT_GITIGNORE" = "0" ]; then
-        echo ""
-        return
-    fi
-
-    local gitignore_file="$PROJECT_DIR/.gitignore"
-    local snapshot_file=""
-    if [ -f "$gitignore_file" ]; then
-        snapshot_file=$(mktemp)
-        cp "$gitignore_file" "$snapshot_file"
-    fi
-    echo "$snapshot_file"
-}
-
-restore_gitignore_if_changed() {
-    local snapshot_file="$1"
-    if [ "$AUTO_LOOP_PROTECT_GITIGNORE" = "0" ]; then
-        [ -n "$snapshot_file" ] && rm -f "$snapshot_file"
-        return
-    fi
-
-    local gitignore_file="$PROJECT_DIR/.gitignore"
-    local changed=0
-
-    if [ -f "$gitignore_file" ]; then
-        if [ -z "$snapshot_file" ] || [ ! -f "$snapshot_file" ]; then
-            changed=1
-        elif ! cmp -s "$gitignore_file" "$snapshot_file"; then
-            changed=1
-        fi
-    else
-        if [ -n "$snapshot_file" ] && [ -f "$snapshot_file" ]; then
-            changed=1
-        fi
-    fi
-
-    if [ "$changed" -eq 1 ]; then
-        if [ -n "$snapshot_file" ] && [ -f "$snapshot_file" ]; then
-            cp "$snapshot_file" "$gitignore_file"
-            log_cycle "$loop_count" "GUARD" "Blocked cycle mutation of .gitignore and restored baseline"
-        else
-            rm -f "$gitignore_file"
-            log_cycle "$loop_count" "GUARD" "Blocked cycle-created .gitignore and removed it"
-        fi
-    fi
-
-    [ -n "$snapshot_file" ] && rm -f "$snapshot_file"
-}
-
-get_file_size_bytes() {
-    local target_file="$1"
-    if [ ! -f "$target_file" ]; then
-        echo 0
-        return
-    fi
-
-    if stat -c%s "$target_file" >/dev/null 2>&1; then
-        stat -c%s "$target_file"
-        return
-    fi
-
-    if stat -f%z "$target_file" >/dev/null 2>&1; then
-        stat -f%z "$target_file"
-        return
-    fi
-
-    wc -c < "$target_file" | tr -d ' '
-}
-
-rotate_logs() {
-    # Keep only the latest N cycle logs
-    local count
-    count=$(find "$LOG_DIR" -name "cycle-*.log" -type f 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$count" -gt "$MAX_LOGS" ]; then
-        local to_delete=$((count - MAX_LOGS))
-        find "$LOG_DIR" -name "cycle-*.log" -type f | sort | head -n "$to_delete" | xargs rm -f 2>/dev/null || true
-        log "Log rotation: removed $to_delete old cycle logs"
-    fi
-
-    # Rotate main log if over 10MB
-    local log_size
-    log_size=$(get_file_size_bytes "$LOG_DIR/auto-loop.log")
-    if [ "$log_size" -gt 10485760 ]; then
-        mv "$LOG_DIR/auto-loop.log" "$LOG_DIR/auto-loop.log.old"
-        log "Main log rotated (was ${log_size} bytes)"
-    fi
-}
-
-cleanup_accidental_root_artifacts() {
-    local removed=0
-    local removed_names=""
-    local f base
-
-    # Known accidental artifacts caused by malformed shell redirections in generated commands.
-    for f in "$PROJECT_DIR"/=* "$PROJECT_DIR"/口径说明*; do
-        [ -f "$f" ] || continue
-        if [ ! -s "$f" ]; then
-            rm -f "$f"
-            removed=$((removed + 1))
-            base=$(basename "$f")
-            if [ -z "$removed_names" ]; then
-                removed_names="$base"
-            else
-                removed_names="$removed_names, $base"
-            fi
-        fi
-    done
-
-    if [ "$removed" -gt 0 ]; then
-        log_cycle "$loop_count" "GUARD" "Removed accidental root zero-byte artifact(s): $removed_names"
-    fi
-}
-
-backup_consensus() {
-    if [ -f "$CONSENSUS_FILE" ]; then
-        cp "$CONSENSUS_FILE" "$CONSENSUS_FILE.bak"
-    fi
-}
-
-restore_consensus() {
-    if [ -f "$CONSENSUS_FILE.bak" ]; then
-        cp "$CONSENSUS_FILE.bak" "$CONSENSUS_FILE"
-        log "Consensus restored from backup after failed cycle"
-    fi
-}
-
-validate_consensus() {
-    if [ ! -s "$CONSENSUS_FILE" ]; then
-        return 1
-    fi
-    if ! grep -q "^# Auto Company Consensus" "$CONSENSUS_FILE"; then
-        return 1
-    fi
-    if ! grep -q "^## Next Action" "$CONSENSUS_FILE"; then
-        return 1
-    fi
-    if ! grep -q "^## Company State" "$CONSENSUS_FILE"; then
-        return 1
-    fi
-    return 0
-}
-
-consensus_changed_since_backup() {
-    if [ ! -f "$CONSENSUS_FILE" ]; then
-        return 1
-    fi
-
-    if [ ! -f "$CONSENSUS_FILE.bak" ]; then
-        return 0
-    fi
-
-    if cmp -s "$CONSENSUS_FILE" "$CONSENSUS_FILE.bak"; then
-        return 1
-    fi
-
-    return 0
-}
-
-resolve_codex_bin() {
-    if [ -n "$CODEX_BIN" ]; then
-        if [ -x "$CODEX_BIN" ]; then
-            echo "$CODEX_BIN"
-            return 0
-        fi
-        if command -v "$CODEX_BIN" >/dev/null 2>&1; then
-            command -v "$CODEX_BIN"
-            return 0
-        fi
-    fi
-
-    # Prefer WSL-local Codex installed via nvm.
-    local nvm_candidate=""
-    for candidate in "$HOME"/.nvm/versions/node/*/bin/codex; do
-        if [ -x "$candidate" ]; then
-            nvm_candidate="$candidate"
-        fi
-    done
-    if [ -n "$nvm_candidate" ]; then
-        echo "$nvm_candidate"
-        return 0
-    fi
-
-    # Fallback: ask an interactive bash shell (loads user profile).
-    local interactive_candidate
-    interactive_candidate=$(bash -ic 'command -v codex' 2>/dev/null | tail -n1 | tr -d '\r' || true)
-    if [ -n "$interactive_candidate" ] && [ -x "$interactive_candidate" ]; then
-        echo "$interactive_candidate"
-        return 0
-    fi
-
-    # Last fallback: current shell PATH.
-    if command -v codex >/dev/null 2>&1; then
-        command -v codex
-        return 0
-    fi
-
-    return 1
-}
-
-resolve_claude_bin() {
-    if [ -n "$CLAUDE_BIN" ]; then
-        if [ -x "$CLAUDE_BIN" ]; then
-            echo "$CLAUDE_BIN"
-            return 0
-        fi
-        if command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
-            command -v "$CLAUDE_BIN"
-            return 0
-        fi
-    fi
-
-    # Prefer WSL-local Claude CLI installed via nvm.
-    local nvm_candidate=""
-    for candidate in "$HOME"/.nvm/versions/node/*/bin/claude; do
-        if [ -x "$candidate" ]; then
-            nvm_candidate="$candidate"
-        fi
-    done
-    if [ -n "$nvm_candidate" ]; then
-        echo "$nvm_candidate"
-        return 0
-    fi
-
-    # Fallback: ask an interactive bash shell (loads user profile).
-    local interactive_candidate
-    interactive_candidate=$(bash -ic 'command -v claude' 2>/dev/null | tail -n1 | tr -d '\r' || true)
-    if [ -n "$interactive_candidate" ] && [ -x "$interactive_candidate" ]; then
-        echo "$interactive_candidate"
-        return 0
-    fi
-
-    # Last fallback: current shell PATH.
-    if command -v claude >/dev/null 2>&1; then
-        command -v claude
-        return 0
-    fi
-
-    return 1
-}
-
-resolve_engine_bin() {
-    case "$ENGINE" in
-        claude)
-            resolve_claude_bin
-            ;;
-        codex)
-            resolve_codex_bin
-            ;;
-        *)
-            return 1
-            ;;
-    esac
 }
 
 run_codex_cycle() {
@@ -506,7 +212,6 @@ extract_cycle_metadata() {
     RESULT_TEXT=""
     CYCLE_COST="N/A"
     CYCLE_SUBTYPE="unknown"
-    CYCLE_TYPE="${ENGINE}_exec"
 
     if [ "$ENGINE" = "claude" ]; then
         if command -v jq >/dev/null 2>&1; then
@@ -523,11 +228,6 @@ extract_cycle_metadata() {
             parsed_subtype=$(echo "$RESULT_MESSAGE" | jq -r '.subtype // empty' 2>/dev/null || true)
             if [ -n "$parsed_subtype" ]; then
                 CYCLE_SUBTYPE="$parsed_subtype"
-            fi
-
-            parsed_type=$(echo "$RESULT_MESSAGE" | jq -r '.type // empty' 2>/dev/null || true)
-            if [ -n "$parsed_type" ]; then
-                CYCLE_TYPE="$parsed_type"
             fi
         fi
 
@@ -576,9 +276,9 @@ fi
 # Check dependencies
 if ! RESOLVED_ENGINE_BIN="$(resolve_engine_bin)"; then
     if [ "$ENGINE" = "claude" ]; then
-        echo "Error: Claude CLI not found. Install Claude Code in WSL and verify with 'claude --version'."
+        echo "Error: Claude CLI not found. Install Claude Code and verify with 'claude --version'."
     else
-        echo "Error: Codex CLI not found. Install Codex in WSL and verify with 'codex --version'."
+        echo "Error: Codex CLI not found. Install Codex and verify with 'codex --version'."
     fi
     exit 1
 fi
@@ -597,6 +297,7 @@ trap cleanup SIGTERM SIGINT SIGHUP
 # Initialize counters
 loop_count=0
 error_count=0
+load_total_cost
 
 log "=== Auto Company Loop Started (PID $$) ==="
 log "Project: $PROJECT_DIR"
@@ -684,6 +385,7 @@ This is Cycle #$loop_count. Act decisively."
 
     # Extract result fields for status classification
     extract_cycle_metadata
+    accumulate_cycle_cost "$CYCLE_COST"
 
     cycle_failed_reason=""
     cycle_soft_timeout=0
@@ -700,26 +402,33 @@ This is Cycle #$loop_count. Act decisively."
     fi
 
     if [ "$cycle_soft_timeout" -eq 1 ]; then
-        log_cycle "$loop_count" "OK" "Timed out after ${CYCLE_TIMEOUT_SECONDS}s but consensus was updated; keeping progress (cost: ${CYCLE_COST}, subtype: ${CYCLE_SUBTYPE})"
+        log_cycle "$loop_count" "OK" "Timed out after ${CYCLE_TIMEOUT_SECONDS}s but consensus was updated; keeping progress (cost: ${CYCLE_COST}, total: \$${total_cost_usd}, subtype: ${CYCLE_SUBTYPE})"
         if [ -n "$RESULT_TEXT" ]; then
             log_cycle "$loop_count" "SUMMARY" "$(echo "$RESULT_TEXT" | head -c 300)"
         fi
+        if consensus_changed_since_backup; then
+            snapshot_consensus_history
+        fi
         error_count=0
     elif [ -z "$cycle_failed_reason" ]; then
-        log_cycle "$loop_count" "OK" "Completed (cost: ${CYCLE_COST}, subtype: ${CYCLE_SUBTYPE})"
+        log_cycle "$loop_count" "OK" "Completed (cost: ${CYCLE_COST}, total: \$${total_cost_usd}, subtype: ${CYCLE_SUBTYPE})"
         if [ -n "$RESULT_TEXT" ]; then
             log_cycle "$loop_count" "SUMMARY" "$(echo "$RESULT_TEXT" | head -c 300)"
+        fi
+        if consensus_changed_since_backup; then
+            snapshot_consensus_history
         fi
         error_count=0
     else
         error_count=$((error_count + 1))
-        log_cycle "$loop_count" "FAIL" "$cycle_failed_reason (cost: ${CYCLE_COST}, subtype: ${CYCLE_SUBTYPE}, errors: $error_count/$MAX_CONSECUTIVE_ERRORS)"
+        log_cycle "$loop_count" "FAIL" "$cycle_failed_reason (cost: ${CYCLE_COST}, total: \$${total_cost_usd}, subtype: ${CYCLE_SUBTYPE}, errors: $error_count/$MAX_CONSECUTIVE_ERRORS)"
 
         # Restore consensus on hard failure
         restore_consensus
 
-        # Check for usage limit
-        if check_usage_limit "$OUTPUT"; then
+        # Check for usage limit — only when the engine itself failed, so
+        # cycle content mentioning rate limits can't stall the loop.
+        if [ "$EXIT_CODE" -ne 0 ] && check_usage_limit "$OUTPUT"; then
             log_cycle "$loop_count" "LIMIT" "API usage limit detected. Waiting ${LIMIT_WAIT_SECONDS}s..."
             save_state "waiting_limit"
             sleep "$LIMIT_WAIT_SECONDS"
