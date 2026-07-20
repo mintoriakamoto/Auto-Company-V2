@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -40,6 +41,33 @@ CONSENSUS_FILE = REPO_ROOT / "memories" / "consensus.md"
 WINDOWS_HOST = "windows"
 MACOS_HOST = "macos"
 LINUX_HOST = "linux"
+
+# Security config, finalized in main() once the bind host/port is known.
+# The dashboard executes local daemon scripts via POST, so it must only
+# ever answer requests whose Host header names this loopback origin
+# (defense against DNS-rebinding) and whose POSTs prove same-origin
+# intent (defense against CSRF from another browser tab).
+ALLOWED_HOSTS: set[str] = set()
+CSRF_HEADER = "X-Requested-With"
+
+# Serialize state-changing actions so a double-click or an overlapping
+# auto-refresh cannot run two daemon scripts against the same state.
+ACTION_LOCK = threading.Lock()
+
+
+def is_loopback_host(host: str) -> bool:
+    """True if a bind address is loopback-only (safe to expose the action API)."""
+    return host in {"127.0.0.1", "::1", "localhost"}
+
+
+def host_header_allowed(host_header: str | None) -> bool:
+    # An empty allowlist means "not yet configured" (e.g. unit tests calling
+    # handlers directly); only enforce once main() has populated it.
+    if not ALLOWED_HOSTS:
+        return True
+    if not host_header:
+        return False
+    return host_header.split(",")[0].strip().lower() in ALLOWED_HOSTS
 
 
 def ps_quote(value: str) -> str:
@@ -81,16 +109,38 @@ def run_powershell_script(
         ),
     ]
 
+    return _run_subprocess(cmd, timeout)
+
+
+def _run_subprocess(cmd: list[str], timeout: int) -> dict[str, Any]:
+    """Run a subprocess, converting timeouts/missing binaries into a result dict."""
     start = time.time()
-    proc = subprocess.run(
-        cmd,
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed_ms = int((time.time() - start) * 1000)
+        return {
+            "ok": False,
+            "exitCode": 124,
+            "elapsedMs": elapsed_ms,
+            "output": f"Command timed out after {timeout}s: {cmd[0]}",
+        }
+    except OSError as exc:
+        elapsed_ms = int((time.time() - start) * 1000)
+        return {
+            "ok": False,
+            "exitCode": 127,
+            "elapsedMs": elapsed_ms,
+            "output": f"Failed to run {cmd[0]}: {exc}",
+        }
     elapsed_ms = int((time.time() - start) * 1000)
 
     output = (proc.stdout or "").strip()
@@ -114,30 +164,7 @@ def run_shell_script(
     if args:
         cmd.extend(args)
 
-    start = time.time()
-    proc = subprocess.run(
-        cmd,
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
-    elapsed_ms = int((time.time() - start) * 1000)
-
-    output = (proc.stdout or "").strip()
-    error = (proc.stderr or "").strip()
-    combined = output
-    if error:
-        combined = f"{output}\n{error}".strip()
-
-    return {
-        "ok": proc.returncode == 0,
-        "exitCode": proc.returncode,
-        "elapsedMs": elapsed_ms,
-        "output": combined,
-    }
+    return _run_subprocess(cmd, timeout)
 
 
 def get_host_profile(system_name: str | None = None) -> dict[str, Any]:
@@ -456,12 +483,28 @@ def gather_status_payload(system_name: str | None = None) -> dict[str, Any]:
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
+    def _security_headers(self) -> None:
+        # Self-only CSP (fonts allowed for the bundled Google Fonts link) as
+        # defense-in-depth behind output escaping; plus standard hardening.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "script-src 'self'; "
+            "connect-src 'self'; "
+            "base-uri 'none'; frame-ancestors 'none'",
+        )
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+
     def _json(self, payload: dict[str, Any], code: int = 200) -> None:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(raw)))
+        self._security_headers()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -473,8 +516,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(raw)))
+        self._security_headers()
         self.end_headers()
         self.wfile.write(raw)
+
+    def _host_ok(self) -> bool:
+        """Reject requests whose Host isn't our loopback origin (anti DNS-rebinding)."""
+        if host_header_allowed(self.headers.get("Host")):
+            return True
+        self._text("Forbidden (bad Host header)", code=403)
+        return False
+
+    def _csrf_ok(self) -> bool:
+        """Require same-origin proof on state-changing POSTs (anti-CSRF)."""
+        # A custom header cannot be set cross-origin without a CORS preflight,
+        # which this server never approves, so its presence proves the request
+        # came from our own page's script. Also accept an allowlisted Origin.
+        if self.headers.get(CSRF_HEADER):
+            return True
+        origin = self.headers.get("Origin")
+        if origin:
+            netloc = urlparse(origin).netloc.lower()
+            if netloc in ALLOWED_HOSTS or not ALLOWED_HOSTS:
+                return True
+        self._json(
+            {"ok": False, "error": "CSRF check failed: missing X-Requested-With or bad Origin"},
+            code=HTTPStatus.FORBIDDEN,
+        )
+        return False
 
     def _serve_file(self, path: Path, content_type: str) -> None:
         if not path.exists():
@@ -483,6 +552,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._text(path.read_text(encoding="utf-8"), content_type=content_type)
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._host_ok():
+            return
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -519,14 +590,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._text("Not found", code=404)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._host_ok():
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         if path not in {"/api/action/start", "/api/action/stop", "/api/action/refresh"}:
             self._text("Not found", code=404)
             return
+        if not self._csrf_ok():
+            return
 
         action = path.rsplit("/", 1)[-1]
-        result = run_dashboard_action(action)
+        # Serialize actions: only one daemon script runs at a time.
+        if not ACTION_LOCK.acquire(blocking=False):
+            self._json(
+                {"ok": False, "error": "Another action is already running"},
+                code=HTTPStatus.CONFLICT,
+            )
+            return
+        try:
+            result = run_dashboard_action(action)
+        finally:
+            ACTION_LOCK.release()
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "action": action,
@@ -552,6 +637,29 @@ def main() -> None:
     except RuntimeError as exc:
         print(f"[dashboard] {exc}")
         raise SystemExit(1) from exc
+
+    # Populate the Host allowlist for DNS-rebinding protection. The action
+    # API executes local daemon scripts, so binding to a non-loopback
+    # address exposes it to the network without auth — refuse unless the
+    # operator explicitly opts in.
+    global ALLOWED_HOSTS
+    if is_loopback_host(args.host):
+        ALLOWED_HOSTS = {
+            f"127.0.0.1:{args.port}",
+            f"localhost:{args.port}",
+            f"[::1]:{args.port}",
+        }
+    else:
+        if os.environ.get("AUTO_COMPANY_DASHBOARD_ALLOW_REMOTE") != "1":
+            print(
+                f"[dashboard] refusing to bind {args.host}: the action API is "
+                "unauthenticated and would be exposed to the network.\n"
+                "[dashboard] set AUTO_COMPANY_DASHBOARD_ALLOW_REMOTE=1 to override "
+                "(not recommended)."
+            )
+            raise SystemExit(1)
+        print(f"[dashboard] WARNING: binding non-loopback {args.host} with no auth.")
+        ALLOWED_HOSTS = {f"{args.host}:{args.port}"}
 
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     print(f"[dashboard] serving on http://{args.host}:{args.port}")

@@ -187,13 +187,19 @@ function renderStateList(parsed, stateFile) {
   ];
 
   els.stateList.innerHTML = rows
-    .map(([k, v]) => `<div><dt>${k}</dt><dd>${String(v)}</dd></div>`)
+    .map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd></div>`)
     .join("");
 }
 
 async function fetchStatus() {
   const started = performance.now();
-  const res = await fetch("/api/status", { cache: "no-store" });
+  const res = await fetch("/api/status", {
+    cache: "no-store",
+    headers: { "X-Requested-With": "AutoCompanyDashboard" },
+  });
+  if (!res.ok) {
+    throw new Error(`Status request failed (HTTP ${res.status})`);
+  }
   const data = await res.json();
   const elapsed = Math.round(performance.now() - started);
 
@@ -242,7 +248,10 @@ async function runAction(action) {
   btn.disabled = true;
   btn.textContent = `${label}...`;
   try {
-    const res = await fetch(`/api/action/${action}`, { method: "POST" });
+    const res = await fetch(`/api/action/${action}`, {
+      method: "POST",
+      headers: { "X-Requested-With": "AutoCompanyDashboard" },
+    });
     const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.output || `Action ${action} failed`);

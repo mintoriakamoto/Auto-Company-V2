@@ -1,4 +1,5 @@
 import importlib.util
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -270,6 +271,130 @@ Raw=Loop not running
     def test_unsupported_host_raises(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "only supports Windows hosts"):
             dashboard_server.detect_host_kind("SunOS")
+
+    def test_host_header_allowlist(self) -> None:
+        original = dashboard_server.ALLOWED_HOSTS
+        try:
+            # Empty allowlist = unconfigured = allow (unit-test mode).
+            dashboard_server.ALLOWED_HOSTS = set()
+            self.assertTrue(dashboard_server.host_header_allowed("evil.com"))
+            # Configured: only the loopback origin passes.
+            dashboard_server.ALLOWED_HOSTS = {"127.0.0.1:8787", "localhost:8787"}
+            self.assertTrue(dashboard_server.host_header_allowed("127.0.0.1:8787"))
+            self.assertTrue(dashboard_server.host_header_allowed("localhost:8787"))
+            self.assertFalse(dashboard_server.host_header_allowed("evil.com"))
+            self.assertFalse(dashboard_server.host_header_allowed(None))
+            self.assertFalse(dashboard_server.host_header_allowed("attacker.example:8787"))
+        finally:
+            dashboard_server.ALLOWED_HOSTS = original
+
+    def test_is_loopback_host(self) -> None:
+        self.assertTrue(dashboard_server.is_loopback_host("127.0.0.1"))
+        self.assertTrue(dashboard_server.is_loopback_host("::1"))
+        self.assertTrue(dashboard_server.is_loopback_host("localhost"))
+        self.assertFalse(dashboard_server.is_loopback_host("0.0.0.0"))
+        self.assertFalse(dashboard_server.is_loopback_host("192.168.1.5"))
+
+    def test_run_subprocess_handles_timeout(self) -> None:
+        result = dashboard_server._run_subprocess(
+            ["/bin/sh", "-c", "sleep 5"], timeout=1
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["exitCode"], 124)
+        self.assertIn("timed out", result["output"])
+
+    def test_run_subprocess_handles_missing_binary(self) -> None:
+        result = dashboard_server._run_subprocess(
+            ["/nonexistent/binary/xyz"], timeout=5
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["exitCode"], 127)
+        self.assertIn("Failed to run", result["output"])
+
+
+class DashboardHttpTests(unittest.TestCase):
+    """End-to-end HTTP checks for the security guards."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import http.server
+
+        dashboard_server.ALLOWED_HOSTS = {"127.0.0.1:0", "localhost:0"}
+        cls._orig_action = dashboard_server.run_dashboard_action
+        cls._orig_status = dashboard_server.gather_status_payload
+        dashboard_server.run_dashboard_action = lambda action, system_name=None: {
+            "ok": True, "exitCode": 0, "elapsedMs": 1, "output": f"ran {action}"
+        }
+        dashboard_server.gather_status_payload = lambda system_name=None: {"ok": True}
+        cls.server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), dashboard_server.DashboardHandler
+        )
+        cls.port = cls.server.server_address[1]
+        dashboard_server.ALLOWED_HOSTS = {
+            f"127.0.0.1:{cls.port}", f"localhost:{cls.port}"
+        }
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+        dashboard_server.run_dashboard_action = cls._orig_action
+        dashboard_server.gather_status_payload = cls._orig_status
+        dashboard_server.ALLOWED_HOSTS = set()
+
+    def _conn(self):
+        import http.client
+
+        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+
+    def test_bad_host_header_rejected(self) -> None:
+        conn = self._conn()
+        conn.request("GET", "/api/status", headers={"Host": "evil.com"})
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 403)
+        conn.close()
+
+    def test_status_ok_with_good_host(self) -> None:
+        conn = self._conn()
+        conn.request("GET", "/api/status", headers={"Host": f"127.0.0.1:{self.port}"})
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 200)
+        self.assertIn("Content-Security-Policy", dict(resp.getheaders()))
+        conn.close()
+
+    def test_post_without_csrf_header_rejected(self) -> None:
+        conn = self._conn()
+        conn.request("POST", "/api/action/stop", headers={"Host": f"127.0.0.1:{self.port}"})
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 403)
+        conn.close()
+
+    def test_post_with_csrf_header_allowed(self) -> None:
+        conn = self._conn()
+        conn.request(
+            "POST",
+            "/api/action/stop",
+            headers={
+                "Host": f"127.0.0.1:{self.port}",
+                "X-Requested-With": "AutoCompanyDashboard",
+            },
+        )
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 200)
+        conn.close()
+
+    def test_post_with_cross_origin_rejected(self) -> None:
+        conn = self._conn()
+        conn.request(
+            "POST",
+            "/api/action/stop",
+            headers={"Host": f"127.0.0.1:{self.port}", "Origin": "http://evil.com"},
+        )
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 403)
+        conn.close()
 
 
 if __name__ == "__main__":
