@@ -71,6 +71,12 @@ export interface Env {
   APP_URL?: string;
   // Bearer token guarding GET /admin/metrics (read by the autonomous loop).
   ADMIN_METRICS_TOKEN?: string;
+
+  // Legal page identity (shown on /terms, /privacy, /refunds). Fill these in
+  // before charging real customers; unset values render as [PLACEHOLDER].
+  LEGAL_ENTITY?: string;
+  LEGAL_EMAIL?: string;
+  LEGAL_JURISDICTION?: string;
 }
 
 // Maps a Stripe Price id back to the tier it grants. Built at request time

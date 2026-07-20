@@ -9,6 +9,10 @@ import {
   keyCreatedPage,
   dashboardPage,
   errorPage,
+  termsPage,
+  privacyPage,
+  refundPage,
+  type LegalConfig,
 } from './dashboard/pages';
 import type { ApiKey, Env, OGParams, Tier, User } from './types';
 import { TIER_LIMITS, isPaidTier, priceIdToTier, tierToPriceId } from './types';
@@ -533,6 +537,20 @@ app.get('/admin/metrics', async c => {
   const metrics = computeMetrics(rows.results ?? [], funnelRows.results ?? []);
   return c.json({ ...metrics, generated_at: new Date().toISOString() });
 });
+
+// ── Legal / trust pages ──────────────────────────────────────────────────────
+function legalConfig(env: Env): LegalConfig {
+  return {
+    entity: env.LEGAL_ENTITY || '[LEGAL ENTITY]',
+    email: env.LEGAL_EMAIL || '[CONTACT EMAIL]',
+    jurisdiction: env.LEGAL_JURISDICTION || '[JURISDICTION]',
+    lastUpdated: '2026-07-20',
+  };
+}
+
+app.get('/terms', c => htmlResponse(termsPage(legalConfig(c.env))));
+app.get('/privacy', c => htmlResponse(privacyPage(legalConfig(c.env))));
+app.get('/refunds', c => htmlResponse(refundPage(legalConfig(c.env))));
 
 // ── Health / ops ──────────────────────────────────────────────────────────────
 app.get('/health', c => c.json({ ok: true, ts: new Date().toISOString() }));

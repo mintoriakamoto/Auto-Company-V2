@@ -99,20 +99,15 @@ npm run typecheck
 
 ## Deployment
 
+One command provisions D1 + R2, applies migrations, and deploys:
+
 ```bash
-# 1. Create remote D1 database
-wrangler d1 create snapog-db
-# Update wrangler.toml with the database_id
-
-# 2. Apply migrations to remote
-npm run db:remote
-
-# 3. Create R2 bucket
-wrangler r2 bucket create snapog-og-cache
-
-# 4. Deploy
-wrangler deploy
+npm run setup:check   # verify prerequisites, change nothing
+npm run setup         # create resources + deploy (idempotent, re-runnable)
 ```
+
+Full step-by-step (Stripe, secrets, legal, wiring the loop to metrics):
+see [`DEPLOY.md`](DEPLOY.md).
 
 ## Billing (Stripe)
 

@@ -20,6 +20,9 @@ APP_URL = "http://127.0.0.1:8787"
 # dashboard, then paste their price ids here (or per env below).
 STRIPE_PRICE_PRO = ""
 STRIPE_PRICE_BUSINESS = ""
+LEGAL_ENTITY = ""
+LEGAL_EMAIL = ""
+LEGAL_JURISDICTION = ""
 # Secrets (NEVER committed) — set with:
 #   wrangler secret put STRIPE_SECRET_KEY
 #   wrangler secret put STRIPE_WEBHOOK_SECRET
@@ -35,6 +38,9 @@ ENVIRONMENT = "staging"
 APP_URL = "https://snapog-staging.workers.dev"
 STRIPE_PRICE_PRO = ""
 STRIPE_PRICE_BUSINESS = ""
+LEGAL_ENTITY = ""
+LEGAL_EMAIL = ""
+LEGAL_JURISDICTION = ""
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "snapog-db"
@@ -50,6 +56,9 @@ ENVIRONMENT = "production"
 APP_URL = "https://snapog.dev"
 STRIPE_PRICE_PRO = ""
 STRIPE_PRICE_BUSINESS = ""
+LEGAL_ENTITY = ""
+LEGAL_EMAIL = ""
+LEGAL_JURISDICTION = ""
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "snapog-db"

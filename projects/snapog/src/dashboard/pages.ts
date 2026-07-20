@@ -382,9 +382,108 @@ function footer(): string {
   return `
   <footer class="footer">
     <div class="container">
-      snapog.dev — OG images at the edge. Built with ♥ on Cloudflare Workers.
+      <p>snapog.dev — OG images at the edge. Built with ♥ on Cloudflare Workers.</p>
+      <p style="margin-top:8px;font-size:13px;color:var(--text-3);">
+        <a href="/terms">Terms</a> ·
+        <a href="/privacy">Privacy</a> ·
+        <a href="/refunds">Refunds</a>
+      </p>
     </div>
   </footer>`;
+}
+
+// Legal/trust pages. Entity, contact, and jurisdiction come from env so no
+// specific company is fabricated in the source; unset values render as clear
+// [PLACEHOLDER] markers that must be filled before charging real customers.
+export interface LegalConfig {
+  entity: string;
+  email: string;
+  jurisdiction: string;
+  lastUpdated: string;
+}
+
+function legalLayout(title: string, cfg: LegalConfig, sections: string): string {
+  const placeholderNote =
+    cfg.entity.includes('[') || cfg.email.includes('[') || cfg.jurisdiction.includes('[')
+      ? `<div class="alert alert-error" style="margin-bottom:24px;">Template not finalized: set LEGAL_ENTITY, LEGAL_EMAIL and LEGAL_JURISDICTION, and have counsel review before charging customers.</div>`
+      : '';
+  const body = `
+  ${nav()}
+  <section class="section">
+    <div class="container" style="max-width:760px;">
+      <p class="section-title">Legal</p>
+      <h1 class="section-h2">${escapeHtml(title)}</h1>
+      <p class="section-sub" style="margin-bottom:24px;">Last updated: ${escapeHtml(cfg.lastUpdated)}</p>
+      ${placeholderNote}
+      <div style="color:var(--text-2);line-height:1.7;font-size:15px;">
+        ${sections}
+      </div>
+    </div>
+  </section>
+  ${footer()}`;
+  return layout(title, body);
+}
+
+function h(text: string): string {
+  return `<h2 style="color:var(--text-1);font-size:20px;margin:28px 0 12px;">${escapeHtml(text)}</h2>`;
+}
+function p(text: string): string {
+  return `<p style="margin-bottom:12px;">${escapeHtml(text)}</p>`;
+}
+
+export function termsPage(cfg: LegalConfig): string {
+  // Values are raw here; p()/h() escape once. (Pre-escaping would double-encode.)
+  const e = cfg.entity;
+  const sections = [
+    p(`These Terms of Service ("Terms") govern your use of the SnapOG API and website (the "Service"), operated by ${e} ("we", "us"). By creating an API key or using the Service you agree to these Terms.`),
+    h('1. The Service'),
+    p('SnapOG generates Open Graph images via an HTTP API. Access is authenticated with an API key and metered per plan. Free and paid tiers are described on the pricing page and may change with notice.'),
+    h('2. Acceptable use'),
+    p('You may not use the Service to generate unlawful, infringing, or abusive content, to exceed your plan limits through evasion, or to resell the raw API without authorization. We may suspend keys that abuse the Service or threaten its stability.'),
+    h('3. Plans, billing, and changes'),
+    p('Paid plans are billed monthly in advance via our payment processor (Stripe). Usage limits reset each billing month. We may change pricing or limits prospectively; continued use after a change is acceptance.'),
+    h('4. API keys'),
+    p('You are responsible for keeping your API key confidential and for all usage under it. Because keys may appear in public image URLs, treat them as rate-limited access tokens, not secrets, and rotate them if exposed.'),
+    h('5. Availability and warranty'),
+    p('The Service is provided "as is" without warranties of any kind. We do not guarantee uninterrupted or error-free operation and are not liable for indirect or consequential damages to the extent permitted by law.'),
+    h('6. Termination'),
+    p('You may stop using the Service at any time. We may suspend or terminate access for breach of these Terms. Sections that by their nature should survive termination will survive.'),
+    h('7. Contact & governing law'),
+    p(`These Terms are governed by the laws of ${cfg.jurisdiction}. Questions: ${cfg.email}.`),
+  ].join('');
+  return legalLayout('Terms of Service', cfg, sections);
+}
+
+export function privacyPage(cfg: LegalConfig): string {
+  const sections = [
+    p(`This Privacy Policy explains what ${cfg.entity} collects and how it is used when you use SnapOG.`),
+    h('Data we collect'),
+    p('Account: your email address (to issue and identify your API key). Usage: per-request metadata (template, cache hit, timestamp) tied to your key for metering. Attribution: the referral/utm source recorded at signup. Billing: handled by Stripe; we store a Stripe customer id and subscription status, never your card details.'),
+    h('How we use it'),
+    p('To operate the Service, enforce plan limits, provide your dashboard, process payments, and understand which channels bring users. We do not sell personal data.'),
+    h('Processors'),
+    p('We use Cloudflare (hosting, database, image cache) and Stripe (payments). Data is processed on their infrastructure under their terms.'),
+    h('Retention & your rights'),
+    p(`We keep account and usage data while your account is active. You may request access to or deletion of your data by emailing ${cfg.email}; deleting your account removes your keys and associated usage records.`),
+    h('Contact'),
+    p(`Privacy questions: ${cfg.email}.`),
+  ].join('');
+  return legalLayout('Privacy Policy', cfg, sections);
+}
+
+export function refundPage(cfg: LegalConfig): string {
+  const sections = [
+    p(`We want you to be happy with SnapOG, operated by ${cfg.entity}. This policy explains refunds for paid subscriptions.`),
+    h('Free tier'),
+    p('The free tier lets you evaluate the Service at no cost before paying. We encourage using it to confirm SnapOG fits your needs.'),
+    h('Monthly subscriptions'),
+    p('Paid plans are billed monthly. You can cancel anytime from your dashboard; cancellation stops future charges and your plan remains active until the end of the paid period. We do not automatically prorate partial months.'),
+    h('Refund requests'),
+    p(`If you were charged in error or are unsatisfied, email ${cfg.email} within 14 days of the charge and we will review a refund in good faith. Approved refunds are returned to your original payment method via Stripe.`),
+    h('Contact'),
+    p(`Billing questions: ${cfg.email}.`),
+  ].join('');
+  return legalLayout('Refund Policy', cfg, sections);
 }
 
 export function landingPage(rawHost: string): string {
