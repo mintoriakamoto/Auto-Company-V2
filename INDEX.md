@@ -10,8 +10,9 @@
 
 - `scripts/windows/`: Windows 控制、保活、自启脚本实现
 - `scripts/core/`: 主循环与核心控制脚本实现
-- `scripts/wsl/`: WSL `systemd --user` 守护脚本实现
+- `scripts/wsl/`: WSL / 原生 Linux `systemd --user` 守护脚本实现
 - `scripts/macos/`: macOS `launchd` 守护脚本实现
+- `packaging/`: Ubuntu 26.04 (amd64) 构建与发布（`.deb` + tarball），入口 `packaging/build-release.sh`（`make build`）
 
 说明：根目录不再保留脚本包装层，执行与维护统一通过 `scripts/`。
 
@@ -60,6 +61,9 @@
 | 核心 | `scripts/core/auto-loop.sh` | 主循环执行、熔断、日志、共识更新 |
 | 核心 | `scripts/core/monitor.sh` | 核心状态/日志输出 |
 | 核心 | `scripts/core/stop-loop.sh` | 核心停止/暂停/恢复控制 |
+| 发布 | `packaging/build-release.sh` | 构建 Ubuntu 26.04 amd64 发布产物（`.deb` + tarball + 校验和） |
+| 发布 | `packaging/deb/auto-company` | 安装后的 CLI 启动器（`init/start/stop/status/...`） |
+| 发布 | `.github/workflows/ubuntu-build-release.yml` | CI：lint + 测试 + 构建 + 安装冒烟 + tag 自动发布 |
 
 ## 快速排障路径
 
@@ -75,4 +79,6 @@
    - `README.md`
    - `README-ZH.md`
    - `docs/windows-setup.md`
+   - `docs/ubuntu-build-release.md`
    - 本索引文件 `INDEX.md`
+3. 发版流程：更新根目录 `VERSION`（与 `package.json` 同步）→ 提交 → 打 `v<VERSION>` tag 并推送，CI 自动构建并发布。

@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# ============================================================
+# Auto Company — Linux launcher (installed to /usr/bin/auto-company)
+# ============================================================
+# The Debian package ships the runtime payload read-only under
+# /opt/auto-company/share. Because the loop writes state into its
+# own project directory (logs/, memories/, .auto-loop.*), each user
+# instantiates a writable workspace with `auto-company init` and all
+# other subcommands operate on that workspace.
+#
+# Workspace resolution order:
+#   1. $AUTO_COMPANY_HOME
+#   2. ~/auto-company
+# ============================================================
+
+set -euo pipefail
+
+SHARE_DIR="${AUTO_COMPANY_SHARE:-/opt/auto-company/share}"
+
+version() {
+    if [ -f "$SHARE_DIR/VERSION" ]; then
+        tr -d ' \n' < "$SHARE_DIR/VERSION"
+        echo ""
+    else
+        echo "unknown"
+    fi
+}
+
+usage() {
+    cat << 'USAGE'
+Usage: auto-company <command> [args]
+
+Workspace:
+  init [DIR] [--force]   Create a writable workspace (default: ~/auto-company,
+                         or $AUTO_COMPANY_HOME). --force overwrites files that
+                         already exist in a non-empty directory.
+
+Loop control (run inside the resolved workspace):
+  start                  Run the auto-loop in the foreground
+  stop                   Request a graceful stop
+  status                 Show loop status + latest consensus
+  last                   Show last cycle's full output
+  cycles                 Show cycle history summary
+  monitor                Tail live logs (Ctrl+C to exit)
+
+Daemon (systemd --user):
+  install-daemon         Install and enable auto-company.service
+  uninstall-daemon       Remove auto-company.service
+
+Misc:
+  version                Print installed version
+  help                   Show this help
+
+Environment:
+  AUTO_COMPANY_HOME      Workspace directory (default: ~/auto-company)
+USAGE
+}
+
+workspace_dir() {
+    echo "${AUTO_COMPANY_HOME:-$HOME/auto-company}"
+}
+
+require_share() {
+    if [ ! -d "$SHARE_DIR" ] || [ ! -f "$SHARE_DIR/scripts/core/auto-loop.sh" ]; then
+        echo "Error: runtime payload not found at $SHARE_DIR." >&2
+        echo "Reinstall the auto-company package." >&2
+        exit 1
+    fi
+}
+
+require_workspace() {
+    local ws
+    ws="$(workspace_dir)"
+    if [ ! -f "$ws/scripts/core/auto-loop.sh" ]; then
+        echo "Error: no workspace at $ws." >&2
+        echo "Run 'auto-company init' first (or set AUTO_COMPANY_HOME)." >&2
+        exit 1
+    fi
+    echo "$ws"
+}
+
+cmd_init() {
+    require_share
+
+    local target="" force=0 arg
+    for arg in "$@"; do
+        case "$arg" in
+            --force) force=1 ;;
+            -*)
+                echo "Error: unknown init option '$arg'." >&2
+                exit 1
+                ;;
+            *)
+                if [ -n "$target" ]; then
+                    echo "Error: init accepts at most one directory argument." >&2
+                    exit 1
+                fi
+                target="$arg"
+                ;;
+        esac
+    done
+    [ -n "$target" ] || target="$(workspace_dir)"
+
+    if [ -e "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ] && [ "$force" -ne 1 ]; then
+        echo "Error: $target already exists and is not empty." >&2
+        echo "Use 'auto-company init $target --force' to overwrite runtime files." >&2
+        exit 1
+    fi
+
+    mkdir -p "$target"
+    tar -C "$SHARE_DIR" -cf - . | tar -C "$target" -xf -
+    mkdir -p "$target/logs" "$target/memories" "$target/projects"
+
+    # The runtime assumes a git repository (consensus resets, cycle commits).
+    if command -v git >/dev/null 2>&1 && [ ! -d "$target/.git" ]; then
+        (
+            cd "$target"
+            git init -q
+            git add -A
+            git -c user.name="auto-company" -c user.email="auto-company@localhost" \
+                commit -qm "Initialize auto-company workspace ($(version))" || true
+        )
+    fi
+
+    echo "Workspace initialized: $target"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Install and authenticate an engine CLI (claude or codex)."
+    if [ "$target" != "$(workspace_dir)" ]; then
+        echo "  2. export AUTO_COMPANY_HOME=$target"
+        echo "  3. auto-company start          # or: auto-company install-daemon"
+    else
+        echo "  2. auto-company start          # or: auto-company install-daemon"
+    fi
+}
+
+run_in_workspace() {
+    local ws
+    ws="$(require_workspace)"
+    local rel="$1"
+    shift
+    exec bash "$ws/$rel" "$@"
+}
+
+main() {
+    local cmd="${1:-help}"
+    if [ $# -gt 0 ]; then
+        shift
+    fi
+
+    case "$cmd" in
+        init)              cmd_init "$@" ;;
+        start)             run_in_workspace scripts/core/auto-loop.sh "$@" ;;
+        stop)              run_in_workspace scripts/core/stop-loop.sh "$@" ;;
+        status)            run_in_workspace scripts/core/monitor.sh --status ;;
+        last)              run_in_workspace scripts/core/monitor.sh --last ;;
+        cycles)            run_in_workspace scripts/core/monitor.sh --cycles ;;
+        monitor)           run_in_workspace scripts/core/monitor.sh "$@" ;;
+        install-daemon)    run_in_workspace scripts/wsl/install-wsl-daemon.sh "$@" ;;
+        uninstall-daemon)  run_in_workspace scripts/wsl/uninstall-wsl-daemon.sh "$@" ;;
+        version|--version|-V) version ;;
+        help|--help|-h)    usage ;;
+        *)
+            echo "Error: unknown command '$cmd'." >&2
+            echo "" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

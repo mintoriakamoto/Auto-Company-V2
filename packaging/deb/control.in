@@ -1,0 +1,17 @@
+Package: auto-company
+Version: @VERSION@
+Section: misc
+Priority: optional
+Architecture: @ARCH@
+Depends: bash (>= 5.0), git, jq, curl, python3
+Recommends: nodejs, npm
+Maintainer: Auto Company Maintainers <silasmintori@gmail.com>
+Homepage: https://github.com/mintoriakamoto/auto-company-v2
+Description: Autonomous AI company runtime (auto-loop + dashboard)
+ 24/7 autonomous loop runtime that drives a Claude/Codex CLI engine
+ through repeated work cycles, with consensus memory, circuit breaker,
+ log rotation, and a systemd user daemon for Linux hosts.
+ .
+ Target platform: Ubuntu 26.04 LTS (amd64). The payload is installed
+ under /opt/auto-company/share and instantiated into a per-user
+ workspace with the auto-company CLI.

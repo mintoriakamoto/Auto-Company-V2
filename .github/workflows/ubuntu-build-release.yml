@@ -1,0 +1,218 @@
+name: ubuntu-build-release
+
+# Build + release pipeline for Ubuntu 26.04 LTS x86_64 (amd64).
+#
+# The build and smoke jobs run inside an ubuntu:26.04 container so the
+# target userspace is pinned regardless of which hosted-runner labels
+# GitHub currently offers. Tag pushes matching v* publish a GitHub
+# Release with the .deb, tarball, and checksums attached.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "dashboard/**"
+      - "tests/**"
+      - "packaging/**"
+      - "Makefile"
+      - "VERSION"
+      - ".github/workflows/ubuntu-build-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ubuntu-build-release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  lint:
+    name: Shell Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Syntax check (bash -n)
+        run: |
+          set -euo pipefail
+          find scripts packaging -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          bash -n packaging/deb/auto-company
+
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          # Existing runtime scripts carry legacy style findings; keep them
+          # visible without failing the build. New packaging scripts are
+          # held to error-free.
+          shellcheck -S error packaging/build-release.sh packaging/deb/auto-company
+          find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning || {
+            echo "::warning::shellcheck reported findings in scripts/ (non-blocking)"
+          }
+
+  test:
+    name: Dashboard Tests (ubuntu 26.04)
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    timeout-minutes: 10
+    steps:
+      - name: Install prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 git ca-certificates
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v
+
+  build:
+    name: Build .deb + tarball (ubuntu 26.04, amd64)
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    timeout-minutes: 15
+    needs: [lint, test]
+    steps:
+      - name: Install prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            dpkg-dev lintian git ca-certificates python3
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify target platform
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          echo "Building on: $PRETTY_NAME ($(uname -m))"
+          test "$ID" = "ubuntu"
+          test "$VERSION_ID" = "26.04"
+
+      - name: Check tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/v}"
+          version="$(tr -d ' \n' < VERSION)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag v$tag does not match VERSION file ($version)."
+            exit 1
+          fi
+
+      - name: Build release artifacts
+        run: ./packaging/build-release.sh
+
+      - name: lintian (informational)
+        run: lintian --no-tag-display-limit dist/*.deb || echo "::warning::lintian reported findings (non-blocking)"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-company-ubuntu26.04-amd64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  smoke:
+    name: Install Smoke Test (ubuntu 26.04)
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    timeout-minutes: 10
+    needs: build
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: auto-company-ubuntu26.04-amd64
+          path: dist
+
+      - name: Verify checksums
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends coreutils
+          cd dist && sha256sum -c SHA256SUMS
+
+      - name: Install package
+        run: |
+          set -euo pipefail
+          apt-get install -y ./dist/auto-company_*_amd64.deb
+
+      - name: Smoke test CLI + workspace init
+        run: |
+          set -euo pipefail
+          auto-company version
+          auto-company help
+          export AUTO_COMPANY_HOME=/tmp/ac-workspace
+          auto-company init
+          test -x /tmp/ac-workspace/scripts/core/auto-loop.sh
+          test -f /tmp/ac-workspace/PROMPT.md
+          test -f /tmp/ac-workspace/CLAUDE.md
+          test -d /tmp/ac-workspace/.claude/agents
+          find /tmp/ac-workspace/scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          # Without an engine CLI installed, start must fail fast with a
+          # clear error instead of looping.
+          if auto-company start; then
+            echo "::error::start unexpectedly succeeded without an engine CLI"
+            exit 1
+          fi
+
+      - name: Smoke test tarball
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ac-tar
+          tar -C /tmp/ac-tar -xzf dist/auto-company-*-linux-amd64.tar.gz
+          ws="$(echo /tmp/ac-tar/auto-company-*)"
+          test -x "$ws/scripts/core/auto-loop.sh"
+          test -f "$ws/Makefile"
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build, smoke]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: auto-company-ubuntu26.04-amd64
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          generate_release_notes: true
+          body: |
+            Auto Company runtime release for **Ubuntu 26.04 LTS x86_64 (amd64)**.
+
+            **Install (.deb):**
+            ```bash
+            sudo apt install ./auto-company_*_amd64.deb
+            auto-company init && auto-company start
+            ```
+
+            **Portable tarball:** extract and run `make start` inside the directory.
+
+            Verify downloads with `sha256sum -c SHA256SUMS`.

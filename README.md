@@ -47,6 +47,7 @@ Each cycle is an independent CLI call. `memories/consensus.md` is the only cross
 
 - Windows users: start from [Windows (WSL) Quick Start](#windows-wsl-quick-start), then read [`docs/windows-setup.md`](docs/windows-setup.md)
 - macOS users: start from [macOS Quick Start](#macos-quick-start), then see [Command Quick Reference](#command-quick-reference-by-platform)
+- Ubuntu users: start from [Ubuntu 26.04 Quick Start](#ubuntu-2604-quick-start-native-linux), packaged releases in [`docs/ubuntu-build-release.md`](docs/ubuntu-build-release.md)
 
 ## Team Lineup (14 Agents)
 
@@ -117,6 +118,33 @@ cd auto-company
 ```
 
 For monitoring, dashboard, and autostart commands, see [`docs/windows-setup.md`](docs/windows-setup.md).
+
+## Ubuntu 26.04 Quick Start (Native Linux)
+
+Two options on Ubuntu 26.04 LTS x86_64 (amd64):
+
+**Option A — install the released package:**
+
+```bash
+# Download auto-company_<version>_amd64.deb from GitHub Releases, then:
+sudo apt install ./auto-company_<version>_amd64.deb
+auto-company init            # creates writable workspace at ~/auto-company
+auto-company start           # foreground loop
+auto-company install-daemon  # or run as systemd --user daemon
+```
+
+**Option B — run from a clone (same as macOS/WSL):**
+
+```bash
+git clone https://github.com/mintoriakamoto/auto-company-v2.git
+cd auto-company-v2
+make start        # foreground
+make install      # or systemd --user daemon
+```
+
+Build the release artifacts yourself with `make build` (produces `.deb` +
+portable tarball + `SHA256SUMS` into `dist/`). Full packaging and CI details:
+[`docs/ubuntu-build-release.md`](docs/ubuntu-build-release.md).
 
 ## Command Quick Reference (By Platform)
 

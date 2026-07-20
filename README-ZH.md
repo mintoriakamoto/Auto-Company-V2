@@ -47,6 +47,7 @@ daemon (launchd / systemd --user, 崩溃自重启)
 
 - Windows 用户：从 [Windows (WSL) 快速开始](#windows-wsl-快速开始) 开始，再看 [`docs/windows-setup.md`](docs/windows-setup.md)
 - macOS 用户：从 [macOS 快速开始](#macos-快速开始) 开始，再看 [命令速查（按平台）](#命令速查按平台)
+- Ubuntu 用户：从 [Ubuntu 26.04 快速开始](#ubuntu-2604-快速开始原生-linux) 开始，打包发布见 [`docs/ubuntu-build-release.md`](docs/ubuntu-build-release.md)
 
 ## 团队阵容（14 人）
 
@@ -118,6 +119,32 @@ cd auto-company
 
 监控、看板、自启等命令请查看 [`docs/windows-setup.md`](docs/windows-setup.md)。
 
+## Ubuntu 26.04 快速开始（原生 Linux）
+
+在 Ubuntu 26.04 LTS x86_64 (amd64) 上有两种方式：
+
+**方式 A —— 安装发布包：**
+
+```bash
+# 从 GitHub Releases 下载 auto-company_<version>_amd64.deb，然后：
+sudo apt install ./auto-company_<version>_amd64.deb
+auto-company init            # 在 ~/auto-company 创建可写工作区
+auto-company start           # 前台运行
+auto-company install-daemon  # 或安装为 systemd --user 守护进程
+```
+
+**方式 B —— 克隆仓库直接运行（与 macOS/WSL 相同）：**
+
+```bash
+git clone https://github.com/mintoriakamoto/auto-company-v2.git
+cd auto-company-v2
+make start        # 前台运行
+make install      # 或安装守护进程
+```
+
+使用 `make build` 可自行构建发布产物（`.deb` + 便携 tarball + `SHA256SUMS`，
+输出到 `dist/`）。打包与 CI 详情见
+[`docs/ubuntu-build-release.md`](docs/ubuntu-build-release.md)。
 
 ## 命令速查（按平台）
 

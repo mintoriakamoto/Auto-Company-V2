@@ -1,4 +1,4 @@
-.PHONY: start start-awake awake stop status last cycles monitor dashboard pause resume install uninstall team help
+.PHONY: start start-awake awake stop status last cycles monitor dashboard pause resume install uninstall team build help
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
 ENGINE ?= claude
@@ -92,6 +92,11 @@ team: ## Start selected engine interactive session (ENGINE=claude|codex)
 		exit 1; \
 	fi; \
 	cd "$(CURDIR)" && "$$engine"
+
+# === Build & Release ===
+
+build: ## Build Ubuntu amd64 release artifacts (.deb + tarball) into dist/
+	./packaging/build-release.sh
 
 # === Maintenance ===
 
