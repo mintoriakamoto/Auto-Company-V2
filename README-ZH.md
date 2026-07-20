@@ -81,8 +81,8 @@ daemon (launchd / systemd --user, 崩溃自重启)
 # - 可用模型配额
 
 # 克隆
-git clone https://github.com/MaxMiksa/Auto-Company.git
-cd auto-company
+git clone https://github.com/mintoriakamoto/Auto-Company-V2.git
+cd Auto-Company-V2
 
 # 前台运行（直接看输出）
 make start
@@ -101,8 +101,8 @@ make install
 # - 可用模型配额
 
 # 克隆
-git clone https://github.com/MaxMiksa/Auto-Company.git
-cd auto-company
+git clone https://github.com/mintoriakamoto/Auto-Company-V2.git
+cd Auto-Company-V2
 
 # 在 PowerShell 启动（守护模式，默认引擎为 claude）
 .\scripts\windows\start-win.ps1
@@ -387,5 +387,5 @@ auto-company/
 如有任何问题或建议，请联系 Zheyuan (Max) Kong (卡内基梅隆大学，宾夕法尼亚州)。
 
 Zheyuan (Max) Kong: kongzheyuan@outlook.com | zheyuank@tepper.cmu.edu
-本项目 GitHub 链接：https://github.com/MaxMiksa/Auto-Company
+本项目 GitHub 链接：https://github.com/mintoriakamoto/Auto-Company-V2
 

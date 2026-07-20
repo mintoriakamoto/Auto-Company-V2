@@ -81,8 +81,8 @@ Plus 30+ reusable skills (deep research, scraping, financial modeling, SEO, secu
 # - Available model quota
 
 # Clone
-git clone https://github.com/MaxMiksa/Auto-Company.git
-cd auto-company
+git clone https://github.com/mintoriakamoto/Auto-Company-V2.git
+cd Auto-Company-V2
 
 # Foreground run (live output)
 make start
@@ -101,8 +101,8 @@ make install
 # - Available model quota
 
 # Clone
-git clone https://github.com/MaxMiksa/Auto-Company.git
-cd auto-company
+git clone https://github.com/mintoriakamoto/Auto-Company-V2.git
+cd Auto-Company-V2
 
 # Start (daemon mode via PowerShell, default engine = claude)
 .\scripts\windows\start-win.ps1
@@ -387,5 +387,5 @@ Welcome to submit Issues and Pull Requests!
 Any questions or suggestions? Please contact Zheyuan (Max) Kong (Carnegie Mellon University, Pittsburgh, PA).
 
 Zheyuan (Max) Kong: kongzheyuan@outlook.com | zheyuank@tepper.cmu.edu
-GitHub: https://github.com/MaxMiksa/Auto-Company
+GitHub: https://github.com/mintoriakamoto/Auto-Company-V2
 

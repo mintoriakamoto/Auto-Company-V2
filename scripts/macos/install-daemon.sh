@@ -92,6 +92,21 @@ case "$ENGINE" in
         ;;
 esac
 
+# Escape a value for safe interpolation into plist XML (&, <, > only —
+# these are the characters that break element/text content). Without this
+# a repo path like "~/A & B/repo" or a MODEL/bin value containing '&'
+# produces a malformed plist that launchctl silently fails to parse.
+#
+# Uses sed rather than bash ${//} substitution on purpose: in bash 5.0+ an
+# unescaped '&' in a ${var//pat/repl} replacement means "the matched text",
+# so '<' -> '&lt;' would wrongly yield '<lt;' — and that bashism differs
+# between macOS's default bash 3.2 and newer bash. sed's '\&' is a literal
+# ampersand in both GNU and BSD sed, so this is portable. Order matters:
+# escape '&' first so the ampersands we introduce are not re-escaped.
+xml_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 ENGINE_DIR="$(dirname "$ENGINE_PATH")"
 
 # Detect node path (for wrangler/npx)
@@ -124,6 +139,19 @@ if launchctl list 2>/dev/null | grep -q "$LABEL"; then
     launchctl unload "$PLIST_PATH" 2>/dev/null || true
 fi
 
+# Pre-escape every value that lands in the plist XML.
+E_LABEL="$(xml_escape "$LABEL")"
+E_PROJECT_DIR="$(xml_escape "$PROJECT_DIR")"
+E_PAUSE_FLAG="$(xml_escape "$PAUSE_FLAG")"
+E_DAEMON_PATH="$(xml_escape "$DAEMON_PATH")"
+E_HOME="$(xml_escape "$HOME")"
+E_ENGINE="$(xml_escape "$ENGINE")"
+E_MODEL="$(xml_escape "$MODEL")"
+E_CLAUDE_PERMISSION_MODE="$(xml_escape "$CLAUDE_PERMISSION_MODE")"
+E_CLAUDE_BIN="$(xml_escape "$CLAUDE_BIN")"
+E_CODEX_BIN="$(xml_escape "$CODEX_BIN")"
+E_CODEX_SANDBOX_MODE="$(xml_escape "$CODEX_SANDBOX_MODE")"
+
 # Generate plist
 cat > "$PLIST_PATH" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -131,23 +159,23 @@ cat > "$PLIST_PATH" << EOF
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${LABEL}</string>
+    <string>${E_LABEL}</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>${PROJECT_DIR}/scripts/core/auto-loop.sh</string>
+        <string>${E_PROJECT_DIR}/scripts/core/auto-loop.sh</string>
         <string>--daemon</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>${PROJECT_DIR}</string>
+    <string>${E_PROJECT_DIR}</string>
 
     <key>KeepAlive</key>
     <dict>
         <key>PathState</key>
         <dict>
-            <key>${PAUSE_FLAG}</key>
+            <key>${E_PAUSE_FLAG}</key>
             <false/>
         </dict>
     </dict>
@@ -156,29 +184,29 @@ cat > "$PLIST_PATH" << EOF
     <true/>
 
     <key>StandardOutPath</key>
-    <string>${PROJECT_DIR}/logs/launchd-stdout.log</string>
+    <string>${E_PROJECT_DIR}/logs/launchd-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>${PROJECT_DIR}/logs/launchd-stderr.log</string>
+    <string>${E_PROJECT_DIR}/logs/launchd-stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${DAEMON_PATH}</string>
+        <string>${E_DAEMON_PATH}</string>
         <key>HOME</key>
-        <string>${HOME}</string>
+        <string>${E_HOME}</string>
         <key>ENGINE</key>
-        <string>${ENGINE}</string>
+        <string>${E_ENGINE}</string>
         <key>MODEL</key>
-        <string>${MODEL}</string>
+        <string>${E_MODEL}</string>
         <key>CLAUDE_PERMISSION_MODE</key>
-        <string>${CLAUDE_PERMISSION_MODE}</string>
+        <string>${E_CLAUDE_PERMISSION_MODE}</string>
         <key>CLAUDE_BIN</key>
-        <string>${CLAUDE_BIN}</string>
+        <string>${E_CLAUDE_BIN}</string>
         <key>CODEX_BIN</key>
-        <string>${CODEX_BIN}</string>
+        <string>${E_CODEX_BIN}</string>
         <key>CODEX_SANDBOX_MODE</key>
-        <string>${CODEX_SANDBOX_MODE}</string>
+        <string>${E_CODEX_SANDBOX_MODE}</string>
     </dict>
 
     <key>ThrottleInterval</key>
@@ -194,10 +222,15 @@ launchctl load "$PLIST_PATH"
 echo ""
 echo "Daemon installed and started!"
 echo ""
-echo "Commands:"
-echo "  ./monitor.sh            # Watch live logs"
-echo "  ./monitor.sh --status   # Check status"
-echo "  ./stop-loop.sh          # Stop the loop (daemon will restart it)"
-echo "  ./stop-loop.sh --pause-daemon   # Pause daemon (no auto-restart)"
-echo "  ./stop-loop.sh --resume-daemon  # Resume daemon"
-echo "  ./install-daemon.sh --uninstall  # Remove daemon completely"
+echo "Commands (run from the repo root):"
+echo "  make monitor            # Watch live logs"
+echo "  make status             # Check status"
+echo "  make stop               # Stop the loop (daemon will restart it)"
+echo "  make pause              # Pause daemon (no auto-restart)"
+echo "  make resume             # Resume daemon"
+echo "  make uninstall          # Remove daemon completely"
+echo ""
+echo "Or call the scripts directly:"
+echo "  scripts/core/monitor.sh --status"
+echo "  scripts/core/stop-loop.sh --pause-daemon"
+echo "  scripts/macos/install-daemon.sh --uninstall"

@@ -109,16 +109,65 @@ switch ($Action) {
         [System.IO.File]::WriteAllText($pidFile, "$PID`n", $utf8NoBom)
         Remove-Item $stopFile -ErrorAction SilentlyContinue
 
+        $logDir = Join-Path $repoWin "logs"
+        $null = New-Item -ItemType Directory -Force -Path $logDir -ErrorAction SilentlyContinue
+        $logFile = Join-Path $logDir "wsl-anchor.log"
+        function Write-AnchorLog {
+            param([string]$Message)
+            $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            Add-Content -Path $logFile -Value "[$ts] $Message" -ErrorAction SilentlyContinue
+        }
+
+        $failCount = 0
+        $maxFails = 5
+        $child = $null
         try {
             while (-not (Test-Path $stopFile)) {
-                & wsl.exe -d $Distro --cd $resolvedRepoWsl bash -lc "while true; do sleep 3600; done" | Out-Null
+                # Launch the keepalive as a TRACKED child so we can terminate
+                # it on stop. The previous inline `& wsl.exe ...` blocked here
+                # and was orphaned when the parent was force-killed, leaking a
+                # wsl.exe (and in-distro sleep) on every stop.
+                $child = Start-Process -FilePath "wsl.exe" -WindowStyle Hidden -PassThru -ArgumentList @(
+                    "-d", $Distro,
+                    "--cd", $resolvedRepoWsl,
+                    "bash", "-lc", "while true; do sleep 3600; done"
+                )
+                $startedAt = Get-Date
+
+                # Supervise: poll for a stop request or the child exiting.
+                while (-not $child.HasExited) {
+                    if (Test-Path $stopFile) {
+                        Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
+                        break
+                    }
+                    Start-Sleep -Seconds 1
+                }
                 if (Test-Path $stopFile) {
                     break
                 }
-                Start-Sleep -Seconds 2
+
+                # Child exited on its own. A fast exit means WSL/distro is
+                # misconfigured — back off and cap retries instead of spinning
+                # silently forever.
+                $aliveSeconds = ((Get-Date) - $startedAt).TotalSeconds
+                if ($aliveSeconds -lt 10) {
+                    $failCount++
+                    Write-AnchorLog "wsl anchor child exited after $([int]$aliveSeconds)s (fail $failCount/$maxFails, Distro='$Distro')"
+                    if ($failCount -ge $maxFails) {
+                        Write-AnchorLog "wsl anchor giving up after $maxFails rapid failures; check that WSL distro '$Distro' is available."
+                        exit 1
+                    }
+                    $backoff = [int][Math]::Min(30, [Math]::Pow(2, $failCount))
+                    Start-Sleep -Seconds $backoff
+                } else {
+                    $failCount = 0
+                }
             }
         }
         finally {
+            if ($child -and -not $child.HasExited) {
+                Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
+            }
             Clear-StateFiles
         }
         exit 0
@@ -133,7 +182,15 @@ switch ($Action) {
         }
 
         [System.IO.File]::WriteAllText($stopFile, "1`n", $utf8NoBom)
-        Start-Sleep -Milliseconds 500
+        # Give the run loop time to notice the stop file and kill its wsl.exe
+        # child gracefully (it polls every ~1s). Only force-kill as a last
+        # resort, so the child is not orphaned.
+        for ($i = 0; $i -lt 12; $i++) {
+            Start-Sleep -Milliseconds 500
+            if ($existing.HasExited) {
+                break
+            }
+        }
         if (-not $existing.HasExited) {
             Stop-Process -Id $existing.Id -Force -ErrorAction SilentlyContinue
         }
