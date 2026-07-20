@@ -304,6 +304,15 @@ render_live_metrics() {
                     + " -> checkout_started " + (((.funnel.checkout_started // 0)) | tostring)
                     + " -> converted " + (((.funnel.converted // 0)) | tostring)
              else empty end),
+            (if (.stripe | type) == "object" and (.stripe.error == null) then
+                "- Stripe (authoritative): $" + (((.stripe.mrr_usd // 0)) | tostring)
+                    + " MRR from " + (((.stripe.active_subscriptions // 0)) | tostring)
+                    + " active subs | balance $" + (((.stripe.balance_available_usd // 0)) | tostring)
+                    + " available, $" + (((.stripe.balance_pending_usd // 0)) | tostring) + " pending (to your bank)"
+             else empty end),
+            (if (.at_risk_customers // 0) > 0 then
+                "- At risk (payment failing): " + ((.at_risk_customers) | tostring) + " — win these back first"
+             else empty end),
             (if .generated_at then "- As of: " + (.generated_at | tostring) else empty end)
         ' "$metrics_file" 2>/dev/null || cat "$metrics_file"
     else

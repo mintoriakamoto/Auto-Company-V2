@@ -8,6 +8,23 @@ import { TIER_PRICE_USD, type Tier } from './types';
 export interface UserRow {
   source: string | null;
   billing_tier: string | null;
+  billing_status?: string | null;
+}
+
+// Subscription statuses where we keep the paid tier: active/trialing are
+// healthy; past_due is a grace window while Stripe retries the payment (its
+// Smart Retries / dunning). Everything else drops the account to free.
+const GRANT_STATUSES = new Set(['active', 'trialing', 'past_due']);
+const AT_RISK_STATUSES = new Set(['past_due', 'incomplete', 'unpaid']);
+
+export function subscriptionGrant(
+  status: string,
+  tier: Tier | null
+): { tier: Tier; status: string } {
+  if (tier && tier !== 'free' && GRANT_STATUSES.has(status)) {
+    return { tier, status };
+  }
+  return { tier: 'free', status };
 }
 
 export interface SourceStat {
@@ -32,6 +49,7 @@ export interface Funnel extends FunnelCounts {
 export interface Metrics {
   signups: number;
   paying_customers: number;
+  at_risk_customers: number; // paying but payment failing (past_due/unpaid)
   mrr_usd: number;
   conversion_rate: number; // paying / signups, 0..1
   by_source: SourceStat[];
@@ -84,6 +102,7 @@ export function computeMetrics(rows: UserRow[], funnelRows: FunnelEventRow[] = [
   const bySource = new Map<string, SourceStat>();
   let signups = 0;
   let paying = 0;
+  let atRisk = 0;
   let mrr = 0;
 
   for (const row of rows) {
@@ -95,6 +114,9 @@ export function computeMetrics(rows: UserRow[], funnelRows: FunnelEventRow[] = [
     if (isPaying) {
       paying += 1;
       mrr += price;
+      if (row.billing_status && AT_RISK_STATUSES.has(row.billing_status)) {
+        atRisk += 1;
+      }
     }
 
     let stat = bySource.get(source);
@@ -116,6 +138,7 @@ export function computeMetrics(rows: UserRow[], funnelRows: FunnelEventRow[] = [
   return {
     signups,
     paying_customers: paying,
+    at_risk_customers: atRisk,
     mrr_usd: mrr,
     conversion_rate: signups > 0 ? paying / signups : 0,
     by_source,

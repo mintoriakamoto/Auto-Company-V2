@@ -21,8 +21,10 @@ import {
   createStripeCustomer,
   verifyStripeSignature,
   timingSafeEqual,
+  fetchStripeMrr,
+  fetchStripeBalance,
 } from './billing/stripe';
-import { computeMetrics, normalizeSource, type UserRow } from './metrics';
+import { computeMetrics, normalizeSource, subscriptionGrant, type UserRow } from './metrics';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -485,13 +487,14 @@ app.post('/billing/webhook', async c => {
           const priceId = items?.data?.[0]?.price?.id;
           const tier = priceIdToTier(c.env, priceId);
           const status = typeof obj.status === 'string' ? obj.status : 'active';
-          const active = status === 'active' || status === 'trialing';
           const subId = typeof obj.id === 'string' ? obj.id : null;
           const wasPaying = isPaidTier(user.billing_tier ?? 'free');
-          // Grant the tier only while the subscription is in good standing.
-          await applyTierToUser(c.env.DB, user.id, active && tier ? tier : 'free', status, subId);
+          // Keep the paid tier through the past_due grace window; only drop to
+          // free once Stripe finally gives up (canceled/unpaid/etc).
+          const grant = subscriptionGrant(status, tier);
+          await applyTierToUser(c.env.DB, user.id, grant.tier, grant.status, subId);
           // Record the conversion the first time this account starts paying.
-          if (active && tier && !wasPaying) {
+          if (isPaidTier(grant.tier) && !wasPaying) {
             await recordFunnelEvent(c.env.DB, 'converted', null, user.source ?? null);
           }
         }
@@ -501,6 +504,19 @@ app.post('/billing/webhook', async c => {
         const user = await findUserByCustomer(obj.customer);
         if (user) {
           await applyTierToUser(c.env.DB, user.id, 'free', 'canceled', null);
+        }
+        break;
+      }
+      case 'invoice.payment_failed': {
+        // Dunning: flag the account at-risk. Stripe retries on its own; we
+        // keep the tier (grace) and let subscription.updated / .deleted make
+        // the final call. Recording it surfaces churn risk in metrics.
+        const user = await findUserByCustomer(obj.customer);
+        if (user) {
+          await c.env.DB
+            .prepare('UPDATE users SET billing_status = ? WHERE id = ?')
+            .bind('past_due', user.id)
+            .run();
         }
         break;
       }
@@ -531,11 +547,34 @@ app.get('/admin/metrics', async c => {
   }
 
   const [rows, funnelRows] = await Promise.all([
-    c.env.DB.prepare('SELECT source, billing_tier FROM users').all<UserRow>(),
+    c.env.DB.prepare('SELECT source, billing_tier, billing_status FROM users').all<UserRow>(),
     c.env.DB.prepare('SELECT event FROM funnel_events').all<{ event: string }>(),
   ]);
   const metrics = computeMetrics(rows.results ?? [], funnelRows.results ?? []);
-  return c.json({ ...metrics, generated_at: new Date().toISOString() });
+
+  // Best-effort authoritative money numbers straight from Stripe (real
+  // successful payments + balance heading to your bank). Our DB counts are the
+  // funnel; this is the truth. Never fails the endpoint if Stripe is down.
+  let stripe: Record<string, unknown> | undefined;
+  if (c.env.STRIPE_SECRET_KEY) {
+    try {
+      const [mrr, balance] = await Promise.all([
+        fetchStripeMrr(c.env.STRIPE_SECRET_KEY),
+        fetchStripeBalance(c.env.STRIPE_SECRET_KEY),
+      ]);
+      stripe = {
+        mrr_usd: mrr.mrr_usd,
+        active_subscriptions: mrr.active,
+        balance_available_usd: balance.available_usd,
+        balance_pending_usd: balance.pending_usd,
+      };
+    } catch (err) {
+      console.error('Stripe revenue read failed:', err);
+      stripe = { error: 'stripe_read_failed' };
+    }
+  }
+
+  return c.json({ ...metrics, stripe, generated_at: new Date().toISOString() });
 });
 
 // ── Legal / trust pages ──────────────────────────────────────────────────────

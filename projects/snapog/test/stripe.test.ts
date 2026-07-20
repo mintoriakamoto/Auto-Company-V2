@@ -5,6 +5,8 @@ import {
   computeSignature,
   timingSafeEqual,
   verifyStripeSignature,
+  computeStripeMrr,
+  parseBalance,
 } from '../src/billing/stripe';
 import { priceIdToTier, tierToPriceId } from '../src/types';
 import type { Env } from '../src/types';
@@ -106,5 +108,43 @@ describe('price <-> tier mapping', () => {
     expect(tierToPriceId(env, 'pro')).toBe('price_pro');
     expect(tierToPriceId(env, 'business')).toBe('price_biz');
     expect(tierToPriceId(env, 'free')).toBeNull();
+  });
+});
+
+describe('computeStripeMrr', () => {
+  it('sums monthly amounts for counted statuses only', () => {
+    const subs = [
+      { status: 'active', items: { data: [{ price: { unit_amount: 1900, recurring: { interval: 'month' } } }] } },
+      { status: 'past_due', items: { data: [{ price: { unit_amount: 4900, recurring: { interval: 'month' } } }] } },
+      { status: 'canceled', items: { data: [{ price: { unit_amount: 1900, recurring: { interval: 'month' } } }] } }, // ignored
+    ];
+    const r = computeStripeMrr(subs);
+    expect(r.active).toBe(2);
+    expect(r.mrr_usd).toBe(68); // 19 + 49
+  });
+
+  it('normalizes yearly prices to monthly', () => {
+    const subs = [
+      { status: 'active', items: { data: [{ price: { unit_amount: 12000, recurring: { interval: 'year' } } }] } },
+    ];
+    expect(computeStripeMrr(subs).mrr_usd).toBe(10); // 120/yr -> 10/mo
+  });
+
+  it('is zero for no counted subscriptions', () => {
+    expect(computeStripeMrr([]).mrr_usd).toBe(0);
+  });
+});
+
+describe('parseBalance', () => {
+  it('sums usd available and pending, ignoring other currencies', () => {
+    const b = {
+      available: [{ amount: 5000, currency: 'usd' }, { amount: 9999, currency: 'eur' }],
+      pending: [{ amount: 2500, currency: 'usd' }],
+    };
+    expect(parseBalance(b)).toEqual({ available_usd: 50, pending_usd: 25 });
+  });
+
+  it('handles missing fields', () => {
+    expect(parseBalance({})).toEqual({ available_usd: 0, pending_usd: 0 });
   });
 });

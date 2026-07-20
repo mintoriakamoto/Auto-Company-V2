@@ -3,6 +3,7 @@ import {
   computeMetrics,
   computeFunnel,
   normalizeSource,
+  subscriptionGrant,
   type UserRow,
   type FunnelEventRow,
 } from '../src/metrics';
@@ -82,5 +83,44 @@ describe('computeFunnel', () => {
     const f = computeFunnel([]);
     expect(f.limit_to_checkout).toBe(0);
     expect(f.checkout_to_paid).toBe(0);
+  });
+});
+
+describe('subscriptionGrant (dunning grace)', () => {
+  it('grants the paid tier while active or trialing', () => {
+    expect(subscriptionGrant('active', 'pro')).toEqual({ tier: 'pro', status: 'active' });
+    expect(subscriptionGrant('trialing', 'business')).toEqual({
+      tier: 'business',
+      status: 'trialing',
+    });
+  });
+
+  it('keeps the tier through past_due (grace window)', () => {
+    expect(subscriptionGrant('past_due', 'pro')).toEqual({ tier: 'pro', status: 'past_due' });
+  });
+
+  it('downgrades to free once Stripe gives up', () => {
+    expect(subscriptionGrant('canceled', 'pro').tier).toBe('free');
+    expect(subscriptionGrant('unpaid', 'pro').tier).toBe('free');
+    expect(subscriptionGrant('incomplete_expired', 'business').tier).toBe('free');
+  });
+
+  it('never grants a paid tier without a resolved price', () => {
+    expect(subscriptionGrant('active', null).tier).toBe('free');
+    expect(subscriptionGrant('active', 'free').tier).toBe('free');
+  });
+});
+
+describe('at-risk customers', () => {
+  it('counts paying customers whose payment is failing', () => {
+    const rows: UserRow[] = [
+      { source: 'x', billing_tier: 'pro', billing_status: 'active' },
+      { source: 'x', billing_tier: 'pro', billing_status: 'past_due' }, // at risk
+      { source: 'x', billing_tier: 'business', billing_status: 'unpaid' }, // at risk
+      { source: 'x', billing_tier: 'free', billing_status: 'none' },
+    ];
+    const m = computeMetrics(rows);
+    expect(m.paying_customers).toBe(3);
+    expect(m.at_risk_customers).toBe(2);
   });
 });

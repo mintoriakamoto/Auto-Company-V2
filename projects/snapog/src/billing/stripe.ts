@@ -125,6 +125,97 @@ async function stripeRequest(
   return data;
 }
 
+async function stripeGet(
+  secretKey: string,
+  path: string
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${STRIPE_API}${path}`, {
+    headers: { Authorization: `Bearer ${secretKey}` },
+  });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) {
+    const err = (data.error as { message?: string } | undefined)?.message ?? res.statusText;
+    throw new Error(`Stripe API error (${res.status}): ${err}`);
+  }
+  return data;
+}
+
+// ─── Authoritative revenue (read directly from Stripe) ──────────────────────
+
+interface StripeSubscription {
+  status?: string;
+  items?: { data?: Array<{ price?: { unit_amount?: number; recurring?: { interval?: string } } }> };
+}
+
+// Monthly recurring revenue in whole USD from a list of subscriptions. Only
+// active/trialing/past_due count; yearly prices are normalized to monthly.
+// Pure so it is unit-testable without hitting Stripe.
+export function computeStripeMrr(subs: StripeSubscription[]): {
+  mrr_usd: number;
+  active: number;
+} {
+  const counted = new Set(['active', 'trialing', 'past_due']);
+  let cents = 0;
+  let active = 0;
+  for (const sub of subs) {
+    if (!sub.status || !counted.has(sub.status)) continue;
+    active += 1;
+    for (const item of sub.items?.data ?? []) {
+      const amount = item.price?.unit_amount ?? 0;
+      const interval = item.price?.recurring?.interval ?? 'month';
+      cents += interval === 'year' ? Math.round(amount / 12) : amount;
+    }
+  }
+  return { mrr_usd: Math.round(cents / 100), active };
+}
+
+// Fetch all subscriptions (paginated) and compute authoritative MRR.
+export async function fetchStripeMrr(
+  secretKey: string
+): Promise<{ mrr_usd: number; active: number }> {
+  const subs: StripeSubscription[] = [];
+  let startingAfter: string | undefined;
+  // Cap pages defensively; a young SaaS will have far fewer.
+  for (let page = 0; page < 20; page++) {
+    const qs = new URLSearchParams({ status: 'all', limit: '100' });
+    if (startingAfter) qs.set('starting_after', startingAfter);
+    const data = await stripeGet(secretKey, `/subscriptions?${qs.toString()}`);
+    const batch = (data.data as Array<StripeSubscription & { id?: string }>) ?? [];
+    subs.push(...batch);
+    if (!data.has_more || batch.length === 0) break;
+    startingAfter = batch[batch.length - 1]?.id;
+    if (!startingAfter) break;
+  }
+  return computeStripeMrr(subs);
+}
+
+// Current Stripe balance (money on the way to your bank), in whole USD.
+export function parseBalance(balance: Record<string, unknown>): {
+  available_usd: number;
+  pending_usd: number;
+} {
+  const sumUsd = (entries: unknown): number => {
+    if (!Array.isArray(entries)) return 0;
+    let cents = 0;
+    for (const e of entries) {
+      const rec = e as { amount?: number; currency?: string };
+      if (rec.currency === 'usd') cents += rec.amount ?? 0;
+    }
+    return Math.round(cents / 100);
+  };
+  return {
+    available_usd: sumUsd(balance.available),
+    pending_usd: sumUsd(balance.pending),
+  };
+}
+
+export async function fetchStripeBalance(
+  secretKey: string
+): Promise<{ available_usd: number; pending_usd: number }> {
+  const balance = await stripeGet(secretKey, '/balance');
+  return parseBalance(balance);
+}
+
 export async function createStripeCustomer(
   secretKey: string,
   email: string,
