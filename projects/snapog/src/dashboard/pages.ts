@@ -598,7 +598,7 @@ export function landingPage(rawHost: string): string {
   return layout('Generate OG images at the edge', body);
 }
 
-export function registerPage(error?: string, tier?: string): string {
+export function registerPage(error?: string, tier?: string, source?: string): string {
   const body = `
   ${nav()}
   <section class="section">
@@ -612,6 +612,7 @@ export function registerPage(error?: string, tier?: string): string {
       <div class="card">
         <form method="POST" action="/register">
           <input type="hidden" name="tier" value="${escapeHtml(tier ?? 'free')}" />
+          <input type="hidden" name="source" value="${escapeHtml(source ?? '')}" />
           <div class="form-group">
             <label class="form-label" for="email">EMAIL ADDRESS</label>
             <input class="form-input" type="email" name="email" id="email" placeholder="you@example.com" required autocomplete="email" />

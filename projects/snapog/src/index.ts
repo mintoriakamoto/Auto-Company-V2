@@ -16,7 +16,9 @@ import {
   createCheckoutSession,
   createStripeCustomer,
   verifyStripeSignature,
+  timingSafeEqual,
 } from './billing/stripe';
+import { computeMetrics, normalizeSource, type UserRow } from './metrics';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -225,16 +227,20 @@ app.get('/register', c => {
   const requested = c.req.query('tier');
   const validTiers: Tier[] = ['free', 'pro', 'business'];
   const tier = validTiers.includes(requested as Tier) ? requested : undefined;
-  return htmlResponse(registerPage(undefined, tier));
+  // Acquisition attribution: carry ?ref= (or utm_source) into the form so it
+  // is stored on the user at signup. Gives the loop per-channel conversion.
+  const source = normalizeSource(c.req.query('ref') ?? c.req.query('utm_source'));
+  return htmlResponse(registerPage(undefined, tier, source));
 });
 
 app.post('/register', async c => {
-  let email: string, keyname: string, tier: string;
+  let email: string, keyname: string, tier: string, source: string;
   try {
     const form = await c.req.formData();
     email = (form.get('email') as string ?? '').trim().toLowerCase();
     keyname = (form.get('keyname') as string ?? '').trim() || 'default';
     tier = (form.get('tier') as string ?? 'free').trim();
+    source = normalizeSource(form.get('source') as string ?? '');
   } catch {
     return htmlResponse(registerPage('Invalid form data'), 400);
   }
@@ -246,13 +252,13 @@ app.post('/register', async c => {
   const validTiers: Tier[] = ['free', 'pro', 'business'];
   const safeTier: Tier = validTiers.includes(tier as Tier) ? (tier as Tier) : 'free';
 
-  // Upsert user
+  // Upsert user (record acquisition source on first insert only).
   const userId = crypto.randomUUID();
   await c.env.DB
     .prepare(
-      'INSERT INTO users (id, email) VALUES (?, ?) ON CONFLICT(email) DO NOTHING'
+      'INSERT INTO users (id, email, source) VALUES (?, ?, ?) ON CONFLICT(email) DO NOTHING'
     )
-    .bind(userId, email)
+    .bind(userId, email, source)
     .run();
 
   const user = await c.env.DB
@@ -480,6 +486,27 @@ app.post('/billing/webhook', async c => {
   }
 
   return c.json({ received: true });
+});
+
+// ── Growth metrics (ground truth for the autonomous loop) ────────────────────
+// Token-protected JSON: signups, paying customers, MRR, conversion rate, and a
+// per-source breakdown so the loop can double down on channels that convert.
+app.get('/admin/metrics', async c => {
+  const configured = c.env.ADMIN_METRICS_TOKEN;
+  if (!configured) {
+    return c.json({ error: 'Metrics not configured' }, 503);
+  }
+  const auth = c.req.header('authorization') ?? '';
+  const presented = auth.startsWith('Bearer ') ? auth.slice(7) : c.req.query('token') ?? '';
+  if (!presented || !timingSafeEqual(presented, configured)) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  const rows = await c.env.DB
+    .prepare('SELECT source, billing_tier FROM users')
+    .all<UserRow>();
+  const metrics = computeMetrics(rows.results ?? []);
+  return c.json({ ...metrics, generated_at: new Date().toISOString() });
 });
 
 // ── Health / ops ──────────────────────────────────────────────────────────────

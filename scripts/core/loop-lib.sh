@@ -278,6 +278,34 @@ consensus_changed_since_backup() {
     return 0
 }
 
+render_live_metrics() {
+    # Emit a compact, human-readable summary of memories/metrics.json for
+    # injection into the cycle prompt. Empty output when there is no metrics
+    # file, so the prompt section is simply omitted. Never fails the cycle.
+    local metrics_file="${1:-$PROJECT_DIR/memories/metrics.json}"
+    [ -f "$metrics_file" ] || return 0
+    [ -s "$metrics_file" ] || return 0
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '
+            "- MRR: $" + (((.mrr_usd // 0)) | tostring)
+            + "  | Paying: " + (((.paying_customers // 0)) | tostring)
+            + "  | Signups: " + (((.signups // 0)) | tostring)
+            + "  | Conversion: " + (((((.conversion_rate // 0) * 1000) | floor) / 10) | tostring) + "%",
+            (if (.by_source | type) == "array" and (.by_source | length) > 0 then
+                "- By channel (top by MRR):",
+                (.by_source[:5][] | "    " + (.source // "?")
+                    + ": $" + (((.mrr_usd // 0)) | tostring) + " MRR, "
+                    + (((.paying // 0)) | tostring) + "/" + (((.signups // 0)) | tostring) + " paying")
+             else empty end),
+            (if .generated_at then "- As of: " + (.generated_at | tostring) else empty end)
+        ' "$metrics_file" 2>/dev/null || cat "$metrics_file"
+    else
+        # No jq: pass the raw JSON through; the model can read it.
+        cat "$metrics_file"
+    fi
+}
+
 extract_consensus_section() {
     # Echo the body of a "## <heading>" section from the consensus file
     # (everything up to the next "## " heading), trimmed. Empty if absent.

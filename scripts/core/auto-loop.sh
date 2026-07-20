@@ -31,6 +31,11 @@
 #   MAIN_LOG_KEEP=3             # Rotated main-log generations to keep
 #   CONSENSUS_HISTORY_KEEP=50   # Consensus snapshots to keep (0 = off)
 #   MAX_TOTAL_COST_USD=0        # Cumulative USD spend cap (0 = unlimited)
+#   METRICS_URL=...             # Endpoint returning growth metrics JSON
+#                               # (e.g. a deployed product's /admin/metrics);
+#                               # injected as "Live Metrics" each cycle
+#   METRICS_TOKEN=...           # Bearer token for METRICS_URL (optional)
+#   METRICS_FILE=...            # Local JSON metrics source (dev alternative)
 #   AUTO_LOOP_PROTECT_GITIGNORE=1
 #                               # Restore .gitignore if a cycle mutates it
 # ============================================================
@@ -351,9 +356,14 @@ while true; do
     backup_consensus
     gitignore_snapshot=$(snapshot_gitignore)
 
+    # Refresh live metrics (real conversions/MRR) so the cycle optimizes
+    # against ground truth, not the model's own guesses. Best-effort.
+    bash "$SCRIPT_DIR/collect-metrics.sh" >/dev/null 2>&1 || true
+
     # Build prompt with consensus pre-injected
     PROMPT=$(cat "$PROMPT_FILE")
     CONSENSUS=$(cat "$CONSENSUS_FILE" 2>/dev/null || echo "No consensus file found. This is the very first cycle.")
+    LIVE_METRICS=$(render_live_metrics)
 
     # Engine-aware file-edit guidance: apply_patch is Codex's tool; the
     # Claude engine edits via its Write/Edit tools.
@@ -396,7 +406,13 @@ $CONSENSUS
 - Current Phase: $CURRENT_PHASE
 - Previous Next Action: $PREV_NEXT_ACTION
   (If you are about to record the same Next Action again without shipping an artifact, you are stuck — change direction, shrink scope, or ship something smaller.)
+${LIVE_METRICS:+
+## Live Metrics (ground truth — optimize MRR against THIS, not guesses)
 
+$LIVE_METRICS
+
+Act on this: double down on the channels that convert, cut the ones that do not, and take the single highest-leverage step toward more paying customers. Every product URL you post publicly must carry a tracked \`?ref=<channel>\` tag (see docs/operations/growth-playbook.md) so this attribution stays accurate.
+}
 Act decisively."
 
     # Run selected engine in headless mode with per-cycle timeout

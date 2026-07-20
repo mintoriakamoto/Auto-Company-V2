@@ -71,3 +71,4 @@
 3. **Phase = Building / Launching / Growing**：禁止继续纯讨论。GO 之后每轮**必须产出实物**（`projects/` 下的文件、repo、部署），loop 会检查本轮是否有 `memories/`、`docs/` 之外的实际改动。
 4. **防止空转**：prompt 末尾会给出上一轮的 `Next Action`。如果本轮结束时 `Next Action` 与上一轮相同、且没有产出实物，说明卡住了——立刻换方向、缩范围，或直接 ship 一个更小的东西。
 5. **凡是前端交付**（页面、界面、组件、dashboard、marketing site）→ 必须先读并遵循 `frontend-design.md`，确保视觉与交互质量，不允许用通用默认风格直接输出。
+6. **增长与获客**：进入 Growing / 获客阶段时，必须读并执行 `docs/operations/growth-playbook.md`——按真实指标（prompt 中的 "Live Metrics" 或 `/admin/metrics`）决策，所有对外发布的产品链接都要带 `?ref=<channel>` 追踪标签，让归因数据真实可用。没有付费客户前，全公司的 Next Action 就是"拿下第一个付费客户"。

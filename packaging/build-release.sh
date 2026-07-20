@@ -95,6 +95,7 @@ find "$PAYLOAD_DIR/docs" -type f \
     ! -name '.gitkeep' \
     ! -name 'windows-setup.md' \
     ! -name 'ubuntu-build-release.md' \
+    ! -name 'growth-playbook.md' \
     -delete
 mkdir -p "$PAYLOAD_DIR/projects"
 touch "$PAYLOAD_DIR/projects/.gitkeep"

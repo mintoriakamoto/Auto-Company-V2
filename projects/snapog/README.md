@@ -142,6 +142,18 @@ limit. Cancellation downgrades to free.
 The webhook is the only trusted source of subscription state — the client never
 sets its own tier. Signature verification is unit-tested (`test/stripe.test.ts`).
 
+## Growth metrics + attribution
+
+- **Attribution:** append `?ref=<channel>` (or `utm_source=`) to any link you
+  share; it is captured at `/register` and stored on the user, so revenue can be
+  broken down by acquisition channel.
+- **Metrics API:** `GET /admin/metrics` returns JSON — `signups`,
+  `paying_customers`, `mrr_usd`, `conversion_rate`, and a per-source breakdown.
+  Guard it with a token: `wrangler secret put ADMIN_METRICS_TOKEN`, then call
+  with `Authorization: Bearer <token>` (or `?token=`). This is the ground-truth
+  feed the autonomous loop reads each cycle (`METRICS_URL` → injected as
+  "Live Metrics"). Aggregation is unit-tested in `test/metrics.test.ts`.
+
 ## Security
 
 - **Output escaping.** All request- and DB-derived values reflected into HTML

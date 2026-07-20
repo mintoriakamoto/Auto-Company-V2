@@ -61,8 +61,9 @@
 | 守护 | `scripts/wsl/*.sh` | 兼容包装层，转发到 `scripts/linux/` |
 | 守护 | `scripts/macos/install-daemon.sh` | macOS launchd 安装/卸载（plist 值经 XML 转义） |
 | 核心 | `scripts/core/auto-loop.sh` | 主循环执行、熔断、预算上限、日志、共识更新 |
-| 核心 | `scripts/core/loop-lib.sh` | 可单测的核心函数库（共识校验/预算/成本/引擎解析等），由 auto-loop 与 bats 共用 |
-| 核心 | `scripts/core/monitor.sh` | 核心状态/日志输出 |
+| 核心 | `scripts/core/loop-lib.sh` | 可单测的核心函数库（共识校验/预算/成本/引擎解析/指标渲染等），由 auto-loop 与 bats 共用 |
+| 核心 | `scripts/core/collect-metrics.sh` | 拉取真实增长/收入指标（`METRICS_URL`/`METRICS_FILE`）写入 `memories/metrics.json`，供循环注入 |
+| 核心 | `scripts/core/monitor.sh` | 核心状态/日志输出 + 收入记分板 |
 | 核心 | `scripts/core/stop-loop.sh` | 核心停止/暂停/恢复控制 |
 | 安全 | `scripts/hooks/guard.sh` | PreToolUse 硬拦截（`.claude/settings.json` 挂载）：`rm -rf /`、删库、删 Cloudflare、force-push main、动 `~/.ssh`/`~/.claude` |
 | 发布 | `packaging/build-release.sh` | 构建 Ubuntu 26.04 amd64 发布产物（`.deb` + tarball + 校验和） |

@@ -49,6 +49,7 @@ export interface User {
   id: string;
   email: string;
   created_at: string;
+  source?: string | null;
   stripe_customer_id?: string | null;
   stripe_subscription_id?: string | null;
   billing_tier?: Tier;
@@ -68,6 +69,8 @@ export interface Env {
   STRIPE_PRICE_BUSINESS?: string;
   // Public base URL, e.g. https://snapog.dev — used for checkout redirects.
   APP_URL?: string;
+  // Bearer token guarding GET /admin/metrics (read by the autonomous loop).
+  ADMIN_METRICS_TOKEN?: string;
 }
 
 // Maps a Stripe Price id back to the tier it grants. Built at request time

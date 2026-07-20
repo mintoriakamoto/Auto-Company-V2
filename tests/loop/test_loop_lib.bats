@@ -304,6 +304,27 @@ EOF
     [ "$status" -eq 0 ]
 }
 
+# --- live metrics rendering ---------------------------------------
+
+@test "render_live_metrics is empty when no metrics file exists" {
+    run render_live_metrics "$WORK/nope.json"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "render_live_metrics summarizes MRR and channels" {
+    cat > "$WORK/metrics.json" << 'EOF'
+{"mrr_usd":68,"paying_customers":2,"signups":5,"conversion_rate":0.4,
+ "by_source":[{"source":"reddit","mrr_usd":49,"paying":1,"signups":2},
+              {"source":"producthunt","mrr_usd":19,"paying":1,"signups":2}]}
+EOF
+    run render_live_metrics "$WORK/metrics.json"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"MRR: \$68"* ]]
+    [[ "$output" == *"Paying: 2"* ]]
+    [[ "$output" == *"reddit: \$49 MRR"* ]]
+}
+
 # --- engine resolution --------------------------------------------
 
 @test "resolve_cli_bin honors explicit override path" {
