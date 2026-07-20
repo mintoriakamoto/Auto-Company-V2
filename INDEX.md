@@ -54,17 +54,21 @@
 | 自启 | `scripts/windows/enable-autostart-win.ps1` | 创建登录自启任务 |
 | 自启 | `scripts/windows/disable-autostart-win.ps1` | 删除登录自启任务 |
 | 自启 | `scripts/windows/autostart-status-win.ps1` | 查询自启任务状态 |
-| 守护 | `scripts/linux/install-linux-daemon.sh` | 安装并启用 `auto-company.service`（原生 Linux / WSL） |
+| 守护 | `scripts/linux/install-linux-daemon.sh` | 安装并启用 `auto-company.service`（原生 Linux / WSL），并将 `.auto-loop.env` 权限收紧为 600 |
 | 守护 | `scripts/linux/uninstall-linux-daemon.sh` | 卸载 Linux daemon |
 | 守护 | `scripts/linux/linux-daemon-status.sh` | 查询 Linux daemon 状态 |
+| 守护 | `scripts/linux/{status,start,stop}-linux.sh` | Dashboard/CLI 用的 Linux 状态与启停封装 |
 | 守护 | `scripts/wsl/*.sh` | 兼容包装层，转发到 `scripts/linux/` |
-| 守护 | `scripts/macos/install-daemon.sh` | macOS launchd 安装/卸载 |
-| 核心 | `scripts/core/auto-loop.sh` | 主循环执行、熔断、日志、共识更新 |
+| 守护 | `scripts/macos/install-daemon.sh` | macOS launchd 安装/卸载（plist 值经 XML 转义） |
+| 核心 | `scripts/core/auto-loop.sh` | 主循环执行、熔断、预算上限、日志、共识更新 |
+| 核心 | `scripts/core/loop-lib.sh` | 可单测的核心函数库（共识校验/预算/成本/引擎解析等），由 auto-loop 与 bats 共用 |
 | 核心 | `scripts/core/monitor.sh` | 核心状态/日志输出 |
 | 核心 | `scripts/core/stop-loop.sh` | 核心停止/暂停/恢复控制 |
+| 安全 | `scripts/hooks/guard.sh` | PreToolUse 硬拦截（`.claude/settings.json` 挂载）：`rm -rf /`、删库、删 Cloudflare、force-push main、动 `~/.ssh`/`~/.claude` |
 | 发布 | `packaging/build-release.sh` | 构建 Ubuntu 26.04 amd64 发布产物（`.deb` + tarball + 校验和） |
-| 发布 | `packaging/deb/auto-company` | 安装后的 CLI 启动器（`init/start/stop/status/...`） |
-| 发布 | `.github/workflows/ubuntu-build-release.yml` | CI：lint + 测试 + 构建 + 安装冒烟 + tag 自动发布 |
+| 发布 | `packaging/deb/auto-company` | 安装后的 CLI 启动器（`init/start/stop/status/dashboard/...`） |
+| 发布 | `.github/workflows/ubuntu-build-release.yml` | CI：lint + 测试（unittest + bats loop/hooks）+ 构建 + 安装冒烟 + tag 自动发布 |
+| 发布 | `.github/workflows/snapog-ci.yml` | snapog：typecheck + wrangler dry-run（默认/staging/production） |
 
 ## 快速排障路径
 

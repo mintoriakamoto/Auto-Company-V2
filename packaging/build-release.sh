@@ -84,9 +84,13 @@ tar -C "$PROJECT_DIR" \
     --exclude='.ci-artifacts' \
     -cf - "${PAYLOAD_ITEMS[@]}" | tar -C "$PAYLOAD_DIR" -xf -
 
-# Prune generated docs; recreate runtime-state skeletons empty.
+# Prune generated docs; recreate runtime-state skeleton with only the
+# tracked seed baton (no live consensus/history).
 mkdir -p "$PAYLOAD_DIR/memories"
 touch "$PAYLOAD_DIR/memories/.gitkeep"
+if [ -f "$PROJECT_DIR/memories/consensus.seed.md" ]; then
+    cp "$PROJECT_DIR/memories/consensus.seed.md" "$PAYLOAD_DIR/memories/consensus.seed.md"
+fi
 find "$PAYLOAD_DIR/docs" -type f \
     ! -name '.gitkeep' \
     ! -name 'windows-setup.md' \

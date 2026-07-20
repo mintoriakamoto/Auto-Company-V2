@@ -77,6 +77,9 @@ jobs:
       - name: Run loop-core bats tests
         run: bats tests/loop/
 
+      - name: Run safety-guard bats tests
+        run: bats tests/hooks/
+
   build:
     name: Build .deb + tarball (ubuntu 26.04, amd64)
     runs-on: ubuntu-latest

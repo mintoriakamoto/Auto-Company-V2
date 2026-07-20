@@ -30,6 +30,7 @@
 #   MAX_LOGS=200                # Max cycle logs to keep
 #   MAIN_LOG_KEEP=3             # Rotated main-log generations to keep
 #   CONSENSUS_HISTORY_KEEP=50   # Consensus snapshots to keep (0 = off)
+#   MAX_TOTAL_COST_USD=0        # Cumulative USD spend cap (0 = unlimited)
 #   AUTO_LOOP_PROTECT_GITIGNORE=1
 #                               # Restore .gitignore if a cycle mutates it
 # ============================================================
@@ -64,6 +65,7 @@ MAX_LOGS="${MAX_LOGS:-200}"
 MAIN_LOG_KEEP="${MAIN_LOG_KEEP:-3}"
 CONSENSUS_HISTORY_KEEP="${CONSENSUS_HISTORY_KEEP:-50}"
 CONSENSUS_HISTORY_DIR="$PROJECT_DIR/memories/history"
+MAX_TOTAL_COST_USD="${MAX_TOTAL_COST_USD:-0}"
 AUTO_LOOP_PROTECT_GITIGNORE="${AUTO_LOOP_PROTECT_GITIGNORE:-1}"
 RESOLVED_ENGINE_BIN=""
 
@@ -298,6 +300,7 @@ trap cleanup SIGTERM SIGINT SIGHUP
 loop_count=0
 error_count=0
 load_total_cost
+seed_consensus_if_missing
 
 log "=== Auto Company Loop Started (PID $$) ==="
 log "Project: $PROJECT_DIR"
@@ -351,6 +354,22 @@ while true; do
     # Build prompt with consensus pre-injected
     PROMPT=$(cat "$PROMPT_FILE")
     CONSENSUS=$(cat "$CONSENSUS_FILE" 2>/dev/null || echo "No consensus file found. This is the very first cycle.")
+
+    # Engine-aware file-edit guidance: apply_patch is Codex's tool; the
+    # Claude engine edits via its Write/Edit tools.
+    if [ "$ENGINE" = "codex" ]; then
+        FILE_EDIT_RULE="Never write files via shell heredoc (\`cat <<EOF\`). Use \`apply_patch\` for file creates/edits."
+    else
+        FILE_EDIT_RULE="Never write files via shell heredoc (\`cat <<EOF\`). Use your file-edit tools (Write/Edit) for file creates/edits."
+    fi
+
+    # Drive convergence off per-project phase, not the absolute counter,
+    # and surface the previous Next Action so the model can detect churn.
+    CURRENT_PHASE=$(extract_consensus_section "Current Phase")
+    [ -n "$CURRENT_PHASE" ] || CURRENT_PHASE="(unset — treat as Day 0)"
+    PREV_NEXT_ACTION=$(extract_consensus_section "Next Action")
+    [ -n "$PREV_NEXT_ACTION" ] || PREV_NEXT_ACTION="(none recorded yet)"
+
     FULL_PROMPT="$PROMPT
 
 ---
@@ -360,8 +379,9 @@ while true; do
 1. Early in the cycle, create or update \`memories/consensus.md\` with the required section skeleton.
 2. If work scope is large, persist partial decisions to \`memories/consensus.md\` before deep dives.
 3. Prefer shipping one completed milestone over broad parallel exploration.
-4. Never write files via shell heredoc (\`cat <<EOF\`). Use \`apply_patch\` for file creates/edits.
+4. $FILE_EDIT_RULE
 5. Never execute shell lines that begin with \`>\` or \`>=\`; treat them as text and keep them inside markdown/files.
+6. Drive your work off the phase below, not the absolute cycle number. Once past the discussion phase, this cycle must change something outside \`memories/\` and \`docs/\` (a real artifact under \`projects/\`), or the loop will flag it.
 
 ---
 
@@ -371,7 +391,13 @@ $CONSENSUS
 
 ---
 
-This is Cycle #$loop_count. Act decisively."
+## This Cycle
+
+- Current Phase: $CURRENT_PHASE
+- Previous Next Action: $PREV_NEXT_ACTION
+  (If you are about to record the same Next Action again without shipping an artifact, you are stuck — change direction, shrink scope, or ship something smaller.)
+
+Act decisively."
 
     # Run selected engine in headless mode with per-cycle timeout
     run_engine_cycle "$FULL_PROMPT"
@@ -415,6 +441,17 @@ This is Cycle #$loop_count. Act decisively."
         if [ -n "$RESULT_TEXT" ]; then
             log_cycle "$loop_count" "SUMMARY" "$(echo "$RESULT_TEXT" | head -c 300)"
         fi
+        # Definition of done past the discussion phases: a build/launch/grow
+        # cycle should produce a real artifact, not just rewrite consensus.
+        # Logged (not failed) so monitoring surfaces dithering without
+        # discarding the model's consensus update or tripping the breaker.
+        case "$CURRENT_PHASE" in
+            *Building*|*Launching*|*Growing*|*building*|*launching*|*growing*)
+                if ! cycle_produced_artifact; then
+                    log_cycle "$loop_count" "NOART" "Phase '$CURRENT_PHASE' but no artifact outside memories/docs this cycle (discussion-only)"
+                fi
+                ;;
+        esac
         if consensus_changed_since_backup; then
             snapshot_consensus_history
         fi
@@ -444,6 +481,15 @@ This is Cycle #$loop_count. Act decisively."
             error_count=0
             log "Circuit breaker reset. Resuming..."
         fi
+    fi
+
+    # Financial kill-switch: halt before starting another paid cycle once
+    # cumulative spend reaches the cap. Distinct from the error circuit
+    # breaker and the usage-limit wait — this is a hard, terminal stop.
+    if budget_exceeded; then
+        log_cycle "$loop_count" "BUDGET" "Spend cap reached (total: \$${total_cost_usd} >= cap: \$${MAX_TOTAL_COST_USD}). Halting loop."
+        save_state "budget_halt"
+        cleanup
     fi
 
     save_state "idle"

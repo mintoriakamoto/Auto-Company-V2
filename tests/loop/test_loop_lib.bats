@@ -16,6 +16,7 @@ setup() {
     STATE_FILE="$WORK/.auto-loop-state"
     MAX_LOGS=5
     MAIN_LOG_KEEP=2
+    MAX_TOTAL_COST_USD=0
     AUTO_LOOP_PROTECT_GITIGNORE=1
     CONSENSUS_HISTORY_DIR="$WORK/memories/history"
     CONSENSUS_HISTORY_KEEP=3
@@ -170,6 +171,39 @@ EOF
     grep -q '^STATUS=idle$' "$STATE_FILE"
 }
 
+# --- budget cap ---------------------------------------------------
+
+@test "budget_exceeded is false when cap is zero (unlimited)" {
+    MAX_TOTAL_COST_USD=0
+    total_cost_usd="9999"
+    run budget_exceeded
+    [ "$status" -ne 0 ]
+}
+
+@test "budget_exceeded is false below the cap" {
+    MAX_TOTAL_COST_USD=10
+    total_cost_usd="9.99"
+    run budget_exceeded
+    [ "$status" -ne 0 ]
+}
+
+@test "budget_exceeded is true at or above the cap" {
+    MAX_TOTAL_COST_USD=10
+    total_cost_usd="10"
+    run budget_exceeded
+    [ "$status" -eq 0 ]
+    total_cost_usd="12.5"
+    run budget_exceeded
+    [ "$status" -eq 0 ]
+}
+
+@test "budget_exceeded treats a non-numeric cap as unlimited" {
+    MAX_TOTAL_COST_USD="abc"
+    total_cost_usd="9999"
+    run budget_exceeded
+    [ "$status" -ne 0 ]
+}
+
 # --- log rotation -------------------------------------------------
 
 @test "rotate_logs prunes cycle logs beyond MAX_LOGS" {
@@ -216,6 +250,58 @@ EOF
     printf 'sneaky\n' > "$PROJECT_DIR/.gitignore"
     restore_gitignore_if_changed "$snap"
     [ ! -f "$PROJECT_DIR/.gitignore" ]
+}
+
+# --- consensus section extraction / artifact / seed ---------------
+
+@test "extract_consensus_section returns a section body" {
+    write_valid_consensus
+    run extract_consensus_section "Next Action"
+    [ "$status" -eq 0 ]
+    [ "$output" = "Ship something." ]
+}
+
+@test "extract_consensus_section is empty for a missing section" {
+    write_valid_consensus
+    run extract_consensus_section "Nonexistent Heading"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "seed_consensus_if_missing copies the seed when consensus is absent" {
+    printf '# Auto Company Consensus\n\n## Company State\n\nseed\n\n## Next Action\n\ngo\n' \
+        > "$PROJECT_DIR/memories/consensus.seed.md"
+    [ ! -f "$CONSENSUS_FILE" ]
+    seed_consensus_if_missing
+    [ -f "$CONSENSUS_FILE" ]
+    run validate_consensus
+    [ "$status" -eq 0 ]
+}
+
+@test "seed_consensus_if_missing does not overwrite an existing consensus" {
+    write_valid_consensus
+    printf 'SEED\n' > "$PROJECT_DIR/memories/consensus.seed.md"
+    seed_consensus_if_missing
+    run cat "$CONSENSUS_FILE"
+    [[ "$output" == *"Ship something."* ]]
+}
+
+@test "cycle_produced_artifact ignores memories/docs-only changes" {
+    # Fresh git repo with a committed baseline.
+    git -C "$PROJECT_DIR" init -q
+    git -C "$PROJECT_DIR" config user.email t@t
+    git -C "$PROJECT_DIR" config user.name t
+    mkdir -p "$PROJECT_DIR/projects" "$PROJECT_DIR/docs"
+    echo base > "$PROJECT_DIR/projects/keep.txt"
+    git -C "$PROJECT_DIR" add -A && git -C "$PROJECT_DIR" commit -qm base
+    # Only a docs change: not an artifact.
+    echo x > "$PROJECT_DIR/docs/note.md"
+    run cycle_produced_artifact
+    [ "$status" -ne 0 ]
+    # A projects change: is an artifact.
+    echo y > "$PROJECT_DIR/projects/new.txt"
+    run cycle_produced_artifact
+    [ "$status" -eq 0 ]
 }
 
 # --- engine resolution --------------------------------------------

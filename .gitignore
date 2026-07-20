@@ -184,6 +184,7 @@ docs/*/*
 !docs/*/.gitkeep
 !docs/windows-setup.md
 !docs/ubuntu-build-release.md
-# Ignore all memories (keep folder marker only)
+# Ignore all memories (keep folder marker + tracked seed baton only)
 memories/*
 !memories/.gitkeep
+!memories/consensus.seed.md

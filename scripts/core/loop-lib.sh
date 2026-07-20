@@ -71,6 +71,18 @@ accumulate_cycle_cost() {
     total_cost_usd=$(awk -v a="${total_cost_usd:-0}" -v b="$cost" 'BEGIN { printf "%.4f", a + b }')
 }
 
+budget_exceeded() {
+    # Return 0 (true) when a positive MAX_TOTAL_COST_USD cap is set and
+    # cumulative spend has reached it. A cap of 0 (or unset/non-numeric)
+    # means unlimited, matching the documented default.
+    local cap="${MAX_TOTAL_COST_USD:-0}"
+    if ! printf '%s' "$cap" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+        return 1
+    fi
+    awk -v cap="$cap" -v spent="${total_cost_usd:-0}" \
+        'BEGIN { exit !(cap > 0 && spent + 0 >= cap) }'
+}
+
 load_total_cost() {
     # Resume the cumulative spend counter from a previous run's state
     # file. Parsed with grep (never sourced) on purpose.
@@ -264,6 +276,49 @@ consensus_changed_since_backup() {
     fi
 
     return 0
+}
+
+extract_consensus_section() {
+    # Echo the body of a "## <heading>" section from the consensus file
+    # (everything up to the next "## " heading), trimmed. Empty if absent.
+    local heading="$1"
+    local file="${2:-$CONSENSUS_FILE}"
+    [ -f "$file" ] || return 0
+    awk -v want="## $heading" '
+        $0 == want { grab = 1; next }
+        /^## / { grab = 0 }
+        grab { print }
+    ' "$file" | sed '/^[[:space:]]*$/d'
+}
+
+cycle_produced_artifact() {
+    # Definition of done past the discussion phase: the cycle must have
+    # changed something outside memories/ and docs/ (i.e. real work in
+    # projects/, scripts/, etc.). Returns 0 if a tracked-tree change is
+    # present. Requires git; if unavailable, do not block (return 0).
+    command -v git >/dev/null 2>&1 || return 0
+    git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    local changes
+    changes=$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null \
+        | awk '{ print $2 }' \
+        | grep -vE '^(memories/|docs/|\.auto-loop|logs/)' \
+        | head -n1 || true)
+    [ -n "$changes" ]
+}
+
+seed_consensus_if_missing() {
+    # On the very first cycle there is no baton. If a tracked seed exists,
+    # copy it in so cycle #1 starts from a validated consensus instead of
+    # depending entirely on the model to author a well-formed file.
+    if [ -f "$CONSENSUS_FILE" ]; then
+        return 0
+    fi
+    local seed="$PROJECT_DIR/memories/consensus.seed.md"
+    if [ -f "$seed" ]; then
+        mkdir -p "$(dirname "$CONSENSUS_FILE")"
+        cp "$seed" "$CONSENSUS_FILE"
+        log "Seeded consensus.md from consensus.seed.md (first run)"
+    fi
 }
 
 snapshot_consensus_history() {

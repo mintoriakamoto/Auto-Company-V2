@@ -30,6 +30,10 @@ Humans guide direction only by editing `memories/consensus.md` under "Next Actio
 
 **Allowed:** create repos, deploy projects, create branches, commit code, install dependencies.
 
+**Mechanical enforcement:** the most catastrophic items above are not trusted to prose alone — `scripts/hooks/guard.sh` is wired as a `PreToolUse` hook in `.claude/settings.json` and hard-blocks `rm -rf /`, removal of `~/.ssh`/`~/.claude`/`~/.config`, `gh repo delete`, `wrangler ... delete`, and force-push to main/master. `.claude/settings.json` `deny` rules add a second layer. Treat the table as the contract and the hook as the backstop.
+
+**Spend cap:** set `MAX_TOTAL_COST_USD` (env) to halt the loop once cumulative spend reaches the cap; the loop emits a `BUDGET` state and stops gracefully.
+
 **Workspace rule:** all new projects must be created under `projects/`.
 
 ## Team Architecture
@@ -176,7 +180,7 @@ All skills are under `.claude/skills/`. Any agent can use any skill when relevan
 
 **Principle:** Skills are tools, agents are operators. Combine skills when tasks cross domains.
 
-**Frontend delivery rule:** When a cycle will produce a landing page, dashboard, website, app UI, frontend component, or any user-facing interface, the responsible agents must invoke `.claude/skills/frontend-design.md` before layout, styling, or implementation work begins.
+**Frontend delivery rule:** When a cycle will produce a landing page, dashboard, website, app UI, frontend component, or any user-facing interface, the responsible agents must read and follow the guidance in the file `.claude/skills/frontend-design.md` before layout, styling, or implementation work begins. (It is a reference file, not a registered Skill — read it by path; do not call it via the Skill tool.)
 
 ## Consensus Memory
 
