@@ -56,8 +56,11 @@ PAYLOAD_ITEMS=(
     INDEX.md
     README.md
     README-ZH.md
+    ONBOARDING.md
+    LICENSE
     Makefile
     VERSION
+    .auto-loop.env.example
     .gitignore
     .gitattributes
     .claude

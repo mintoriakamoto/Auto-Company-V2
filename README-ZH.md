@@ -43,6 +43,11 @@ daemon (launchd / systemd --user, 崩溃自重启)
 
 每个周期是一次独立的 CLI 调用。`memories/consensus.md` 是唯一的跨周期状态——类似接力赛传棒。
 
+## 从这里开始
+
+第一次用？**[`ONBOARDING.md`](ONBOARDING.md)** 按顺序列出哪些是你（人）要做的、哪些
+是 AI 自动做的——包括如何真正收款、资金如何到你的银行账户。
+
 ## 你该看哪一节（按平台）
 
 - Windows 用户：从 [Windows (WSL) 快速开始](#windows-wsl-快速开始) 开始，再看 [`docs/windows-setup.md`](docs/windows-setup.md)

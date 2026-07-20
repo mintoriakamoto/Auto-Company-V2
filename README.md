@@ -43,6 +43,12 @@ daemon (launchd / systemd --user, auto-restart on crash)
 
 Each cycle is an independent CLI call. `memories/consensus.md` is the only cross-cycle state.
 
+## Start Here
+
+New here? **[`ONBOARDING.md`](ONBOARDING.md)** is the ordered list of what you
+(a human) set up vs what the AI does on its own — including how to actually get
+paid and access funds.
+
 ## Where To Start (By Platform)
 
 - Windows users: start from [Windows (WSL) Quick Start](#windows-wsl-quick-start), then read [`docs/windows-setup.md`](docs/windows-setup.md)

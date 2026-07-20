@@ -10,6 +10,7 @@
     "test": "vitest run",
     "setup": "./scripts/deploy.sh",
     "setup:check": "./scripts/deploy.sh --check",
+    "preflight": "./scripts/preflight.sh",
     "db:local": "wrangler d1 migrations apply snapog-db --local",
     "db:remote": "wrangler d1 migrations apply snapog-db",
     "staging:deploy": "wrangler deploy --env staging"

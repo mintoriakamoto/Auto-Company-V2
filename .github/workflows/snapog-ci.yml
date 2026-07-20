@@ -51,6 +51,12 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bats
+
+      - name: Preflight script tests
+        run: bats test/preflight.bats
+
       - name: Wrangler build (dry-run, default env)
         run: npx wrangler deploy --dry-run --outdir /tmp/snapog-build
 
