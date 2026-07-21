@@ -112,15 +112,27 @@ describe('price <-> tier mapping', () => {
 });
 
 describe('computeStripeMrr', () => {
-  it('sums monthly amounts for counted statuses only', () => {
+  it('counts active + past_due toward MRR, and reports trialing/at_risk separately', () => {
     const subs = [
       { status: 'active', items: { data: [{ price: { unit_amount: 1900, recurring: { interval: 'month' } } }] } },
       { status: 'past_due', items: { data: [{ price: { unit_amount: 4900, recurring: { interval: 'month' } } }] } },
-      { status: 'canceled', items: { data: [{ price: { unit_amount: 1900, recurring: { interval: 'month' } } }] } }, // ignored
+      { status: 'trialing', items: { data: [{ price: { unit_amount: 1900, recurring: { interval: 'month' } } }] } }, // NOT in MRR
+      { status: 'canceled', items: { data: [{ price: { unit_amount: 9900, recurring: { interval: 'month' } } }] } }, // ignored
     ];
     const r = computeStripeMrr(subs);
-    expect(r.active).toBe(2);
-    expect(r.mrr_usd).toBe(68); // 19 + 49
+    expect(r.mrr_usd).toBe(68); // 19 (active) + 49 (past_due); trialing/canceled excluded
+    expect(r.active).toBe(1);
+    expect(r.trialing).toBe(1);
+    expect(r.at_risk).toBe(1);
+  });
+
+  it('excludes trialing subscriptions from MRR', () => {
+    const subs = [
+      { status: 'trialing', items: { data: [{ price: { unit_amount: 4900, recurring: { interval: 'month' } } }] } },
+    ];
+    const r = computeStripeMrr(subs);
+    expect(r.mrr_usd).toBe(0);
+    expect(r.trialing).toBe(1);
   });
 
   it('normalizes yearly prices to monthly', () => {

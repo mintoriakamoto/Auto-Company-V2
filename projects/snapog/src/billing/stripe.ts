@@ -151,26 +151,34 @@ interface StripeSubscription {
   };
 }
 
-// Monthly recurring revenue in whole USD from a list of subscriptions. Only
-// active/trialing/past_due count; yearly prices are normalized to monthly.
-// Pure so it is unit-testable without hitting Stripe.
+// Monthly recurring revenue in whole USD. MRR counts only genuinely-collecting
+// subscriptions: `active` and `past_due` (subscribed, retrying), NOT `trialing`
+// (which bills $0 today). Trials and at-risk are reported separately so the
+// autonomous loop isn't misled by inflated revenue. Yearly prices normalized
+// to monthly. Pure — unit-testable without hitting Stripe.
 export function computeStripeMrr(subs: StripeSubscription[]): {
   mrr_usd: number;
   active: number;
+  trialing: number;
+  at_risk: number;
 } {
-  const counted = new Set(['active', 'trialing', 'past_due']);
+  const revenueStatuses = new Set(['active', 'past_due']);
   let cents = 0;
   let active = 0;
+  let trialing = 0;
+  let atRisk = 0;
   for (const sub of subs) {
-    if (!sub.status || !counted.has(sub.status)) continue;
-    active += 1;
+    if (sub.status === 'trialing') trialing += 1;
+    if (sub.status === 'past_due') atRisk += 1;
+    if (!sub.status || !revenueStatuses.has(sub.status)) continue;
+    if (sub.status === 'active') active += 1;
     for (const item of sub.items?.data ?? []) {
       const amount = item.price?.unit_amount ?? 0;
       const interval = item.price?.recurring?.interval ?? 'month';
       cents += interval === 'year' ? Math.round(amount / 12) : amount;
     }
   }
-  return { mrr_usd: Math.round(cents / 100), active };
+  return { mrr_usd: Math.round(cents / 100), active, trialing, at_risk: atRisk };
 }
 
 // A subscription with the fields reconciliation needs.
@@ -181,22 +189,30 @@ export interface SubscriptionSummary {
   priceId: string | undefined;
 }
 
-// Fetch all subscriptions (paginated), returning both the raw list (for MRR)
-// and a normalized summary (for reconciliation).
-export async function fetchSubscriptions(
-  secretKey: string
-): Promise<{ raw: StripeSubscription[]; summaries: SubscriptionSummary[] }> {
+// Fetch all subscriptions (paginated), returning the raw list (for MRR), a
+// normalized summary (for reconciliation), and `complete` — true only when
+// every page was consumed (Stripe reported has_more=false). `complete=false`
+// means the result may be missing subscriptions (page cap hit or a partial
+// page), and reconciliation MUST NOT downgrade based on it.
+export async function fetchSubscriptions(secretKey: string): Promise<{
+  raw: StripeSubscription[];
+  summaries: SubscriptionSummary[];
+  complete: boolean;
+}> {
   const raw: StripeSubscription[] = [];
   const summaries: SubscriptionSummary[] = [];
   let startingAfter: string | undefined;
-  for (let page = 0; page < 20; page++) {
+  let complete = false;
+  const MAX_PAGES = 20;
+  for (let page = 0; page < MAX_PAGES; page++) {
     const qs = new URLSearchParams({ status: 'all', limit: '100' });
     if (startingAfter) qs.set('starting_after', startingAfter);
     const data = await stripeGet(secretKey, `/subscriptions?${qs.toString()}`);
-    const batch =
-      (data.data as Array<
-        StripeSubscription & { id?: string; customer?: string }
-      >) ?? [];
+    if (!Array.isArray(data.data)) {
+      // Malformed/partial response — treat as incomplete, do not trust.
+      return { raw, summaries, complete: false };
+    }
+    const batch = data.data as Array<StripeSubscription & { id?: string; customer?: string }>;
     for (const sub of batch) {
       raw.push(sub);
       summaries.push({
@@ -206,17 +222,23 @@ export async function fetchSubscriptions(
         priceId: sub.items?.data?.[0]?.price?.id,
       });
     }
-    if (!data.has_more || batch.length === 0) break;
+    if (!data.has_more || batch.length === 0) {
+      complete = true;
+      break;
+    }
     startingAfter = batch[batch.length - 1]?.id;
-    if (!startingAfter) break;
+    if (!startingAfter) {
+      // Can't paginate further safely — incomplete.
+      break;
+    }
   }
-  return { raw, summaries };
+  return { raw, summaries, complete };
 }
 
 // Fetch all subscriptions (paginated) and compute authoritative MRR.
 export async function fetchStripeMrr(
   secretKey: string
-): Promise<{ mrr_usd: number; active: number }> {
+): Promise<{ mrr_usd: number; active: number; trialing: number; at_risk: number }> {
   const { raw } = await fetchSubscriptions(secretKey);
   return computeStripeMrr(raw);
 }

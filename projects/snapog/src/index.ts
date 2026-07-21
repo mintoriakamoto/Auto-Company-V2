@@ -154,6 +154,66 @@ async function recordFunnelEvent(
     .run();
 }
 
+// Coarse fixed-window rate limiter backed by D1. Returns true if the caller is
+// OVER the limit (should be rejected). Fails open on DB error (never blocks
+// legitimate traffic because the limiter itself hiccuped).
+async function rateLimited(
+  db: D1Database,
+  key: string,
+  maxPerWindow: number,
+  windowMs: number
+): Promise<boolean> {
+  try {
+    const now = Date.now();
+    const row = await db
+      .prepare('SELECT count, window_ms FROM rate_limits WHERE k = ?')
+      .bind(key)
+      .first<{ count: number; window_ms: number }>();
+    if (!row || now - row.window_ms >= windowMs) {
+      await db
+        .prepare(
+          'INSERT INTO rate_limits (k, count, window_ms) VALUES (?, 1, ?) ' +
+            'ON CONFLICT(k) DO UPDATE SET count = 1, window_ms = ?'
+        )
+        .bind(key, now, now)
+        .run();
+      return false;
+    }
+    if (row.count >= maxPerWindow) return true;
+    await db.prepare('UPDATE rate_limits SET count = count + 1 WHERE k = ?').bind(key).run();
+    return false;
+  } catch (err) {
+    console.error('rateLimited check failed (failing open):', err);
+    return false;
+  }
+}
+
+// Record a limit_reached funnel event at most once per key per billing month,
+// so an exhausted key hammered by crawlers (e.g. a cached og:image URL) doesn't
+// inflate the stage and skew the loop's limit->checkout rate.
+async function recordLimitReachedOnce(
+  db: D1Database,
+  apiKeyId: string,
+  tier: string
+): Promise<void> {
+  const monthStart = new Date(
+    new Date().getUTCFullYear(),
+    new Date().getUTCMonth(),
+    1
+  ).toISOString();
+  await db
+    .prepare(
+      `INSERT INTO funnel_events (id, event, api_key_id, source)
+       SELECT ?, 'limit_reached', ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM funnel_events
+          WHERE event = 'limit_reached' AND api_key_id = ? AND created_at >= ?
+       )`
+    )
+    .bind(crypto.randomUUID(), apiKeyId, tier, apiKeyId, monthStart)
+    .run();
+}
+
 // Cheap bot filter so top-of-funnel view counts aren't dominated by crawlers.
 function isLikelyBot(userAgent: string | undefined): boolean {
   if (!userAgent) return true;
@@ -202,7 +262,7 @@ app.get('/og', async c => {
   // upgrade moment, so record it and point the caller at their dashboard.
   const reserved = await reserveUsage(c.env.DB, apiKey);
   if (!reserved) {
-    c.executionCtx.waitUntil(recordFunnelEvent(c.env.DB, 'limit_reached', apiKey.id, apiKey.tier));
+    c.executionCtx.waitUntil(recordLimitReachedOnce(c.env.DB, apiKey.id, apiKey.tier));
     const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
     return c.json(
       {
@@ -315,6 +375,12 @@ app.post('/register', async c => {
     return htmlResponse(registerPage('Please enter a valid email address', tier), 400);
   }
 
+  // Anti-abuse: cap signups per IP so nobody can mass-create keys/users/emails.
+  const ip = c.req.header('cf-connecting-ip') ?? 'unknown';
+  if (await rateLimited(c.env.DB, `register:${ip}`, 10, 3_600_000)) {
+    return htmlResponse(registerPage('Too many signups from this network — try again later.'), 429);
+  }
+
   // A paid tier requested at signup is only an *intent* to upgrade — it never
   // grants a paid key. Paid tiers are granted solely by the Stripe webhook
   // after a successful payment. (Previously the requested tier was written
@@ -382,23 +448,36 @@ app.post('/recover', async c => {
   }
 
   const neutral = "If that email has a key, we've sent it. Check your inbox.";
+
+  // Rate limit per email to prevent using recovery to email-bomb an inbox.
+  // 3 per hour. The neutral response is returned either way (no signal).
+  if (email && (await rateLimited(c.env.DB, `recover:${email}`, 3, 3_600_000))) {
+    return htmlResponse(recoverPage(undefined, neutral));
+  }
+
+  // Do the lookup + decrypt + send entirely off the response path (waitUntil)
+  // so response latency is identical for registered and unregistered emails
+  // (no timing enumeration), and the neutral message is returned immediately.
   if (email && c.env.AUTH_SECRET) {
-    const row = await c.env.DB
-      .prepare(
-        `SELECT k.key_encrypted AS enc FROM api_keys k
-           JOIN users u ON u.id = k.user_id
-          WHERE u.email = ? AND k.key_encrypted IS NOT NULL
-          ORDER BY k.created_at DESC LIMIT 1`
-      )
-      .bind(email)
-      .first<{ enc: string }>();
-    if (row?.enc) {
-      const rawKey = await decryptSecret(c.env.AUTH_SECRET, row.enc);
-      if (rawKey) {
-        const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
-        c.executionCtx.waitUntil(sendEmail(c.env, apiKeyEmail(email, rawKey, base)));
-      }
-    }
+    const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
+    const secret = c.env.AUTH_SECRET;
+    const env = c.env;
+    c.executionCtx.waitUntil(
+      (async () => {
+        const row = await env.DB
+          .prepare(
+            `SELECT k.key_encrypted AS enc FROM api_keys k
+               JOIN users u ON u.id = k.user_id
+              WHERE u.email = ? AND k.key_encrypted IS NOT NULL
+              ORDER BY k.created_at DESC LIMIT 1`
+          )
+          .bind(email)
+          .first<{ enc: string }>();
+        if (!row?.enc) return;
+        const rawKey = await decryptSecret(secret, row.enc);
+        if (rawKey) await sendEmail(env, apiKeyEmail(email, rawKey, base));
+      })()
+    );
   }
   return htmlResponse(recoverPage(undefined, neutral));
 });
@@ -620,7 +699,15 @@ app.post('/billing/webhook', async c => {
         break;
     }
   } catch (err) {
+    // Roll back the idempotency claim so Stripe's retry RE-PROCESSES this
+    // event. Without this, a transient DB error during the tier grant would
+    // leave the event marked "processed" and the paying customer never
+    // upgraded (the retry would short-circuit as a duplicate).
     console.error(`Webhook handler failed for ${event.type}:`, err);
+    await c.env.DB.prepare('DELETE FROM billing_events WHERE id = ?')
+      .bind(event.id)
+      .run()
+      .catch(() => {});
     return c.json({ error: 'Handler error' }, 500);
   }
 
@@ -649,6 +736,8 @@ async function getStripeSnapshot(env: Env): Promise<Record<string, unknown> | un
     snapshot = {
       mrr_usd: mrr.mrr_usd,
       active_subscriptions: mrr.active,
+      trialing_subscriptions: mrr.trialing,
+      at_risk_subscriptions: mrr.at_risk,
       balance_available_usd: balance.available_usd,
       balance_pending_usd: balance.pending_usd,
     };
@@ -729,7 +818,16 @@ app.onError((err, _c) => {
 // ── Scheduled (cron) — money hygiene that webhooks can't guarantee ───────────
 async function reconcileSubscriptions(env: Env): Promise<void> {
   if (!env.STRIPE_SECRET_KEY) return;
-  const { summaries } = await fetchSubscriptions(env.STRIPE_SECRET_KEY);
+  const { summaries, complete } = await fetchSubscriptions(env.STRIPE_SECRET_KEY);
+
+  // Only ever downgrade when we KNOW the read was complete and actually
+  // returned subscriptions. An empty or partial result (transient error,
+  // wrong-mode key, pagination cap) must not be read as "everyone canceled".
+  const allowDowngrades = complete && summaries.length > 0;
+  if (!complete) {
+    console.warn('Reconcile: Stripe subscription list incomplete — skipping downgrades.');
+  }
+
   const users = await env.DB
     .prepare(
       'SELECT id, stripe_customer_id, billing_tier FROM users WHERE stripe_customer_id IS NOT NULL'
@@ -738,13 +836,14 @@ async function reconcileSubscriptions(env: Env): Promise<void> {
   const changes = planReconciliation(
     users.results ?? [],
     summaries,
-    priceId => priceIdToTier(env, priceId)
+    priceId => priceIdToTier(env, priceId),
+    { allowDowngrades }
   );
   for (const change of changes) {
     await env.DB.batch([
       env.DB
         .prepare('UPDATE users SET billing_tier = ?, billing_status = ? WHERE id = ?')
-        .bind(change.tier, 'reconciled', change.userId),
+        .bind(change.tier, change.status, change.userId),
       env.DB
         .prepare('UPDATE api_keys SET tier = ?, monthly_limit = ? WHERE user_id = ?')
         .bind(change.tier, TIER_LIMITS[change.tier], change.userId),
