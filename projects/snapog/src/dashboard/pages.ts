@@ -738,7 +738,28 @@ export function registerPage(error?: string, tier?: string, source?: string): st
   return layout('Get API Key', body);
 }
 
-export function keyCreatedPage(rawKey: string, email: string, tier: string): string {
+export function keyCreatedPage(
+  rawKey: string,
+  email: string,
+  intendedTier?: 'pro' | 'business'
+): string {
+  const keyField = escapeHtml(rawKey);
+  // A paid tier is granted only after payment, so a new key is always Free.
+  // If the user came here intending to upgrade, drive them straight to
+  // checkout (this is where the old "free paid key" bug leaked revenue).
+  const upgradeCta = intendedTier
+    ? `<div class="alert" style="background:var(--accent-dim);border:1px solid var(--accent);color:var(--text-1);margin-top:24px;">
+         <strong>Finish upgrading to ${intendedTier === 'business' ? 'Business' : 'Pro'}.</strong>
+         Your key is on the free tier until payment completes.
+         <form method="POST" action="/billing/checkout" style="margin-top:10px;">
+           <input type="hidden" name="key" value="${keyField}" />
+           <input type="hidden" name="tier" value="${intendedTier}" />
+           <button type="submit" class="btn btn-primary" style="width:100%;">
+             Continue to payment — ${intendedTier === 'business' ? '$49' : '$19'}/mo →
+           </button>
+         </form>
+       </div>`
+    : '';
   const body = `
   ${nav()}
   <section class="section">
@@ -753,7 +774,7 @@ export function keyCreatedPage(rawKey: string, email: string, tier: string): str
       </p>
 
       <div class="card">
-        <p class="card-title">API KEY — ${escapeHtml(tier.toUpperCase())}</p>
+        <p class="card-title">API KEY — FREE</p>
         <div class="api-key-row">
           <div class="api-key-display">
             <span class="key-val" id="api-key">${rawKey}</span>
@@ -761,9 +782,10 @@ export function keyCreatedPage(rawKey: string, email: string, tier: string): str
           <button class="btn btn-primary" data-copy="${rawKey}" style="white-space:nowrap;">Copy</button>
         </div>
         <p style="font-size:12px;color:var(--text-3);margin-top:12px;font-family:var(--font-mono);">
-          Free tier: 100 images/month · Resets monthly · ${tier === 'pro' ? '10,000 images' : 'upgrade anytime'}
+          Free tier: 100 images/month · Resets monthly · upgrade anytime
         </p>
       </div>
+      ${upgradeCta}
 
       <div class="code-block" style="margin-top:32px;">
         <div class="code-block-header">

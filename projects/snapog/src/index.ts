@@ -271,8 +271,11 @@ app.post('/register', async c => {
     return htmlResponse(registerPage('Please enter a valid email address', tier), 400);
   }
 
-  const validTiers: Tier[] = ['free', 'pro', 'business'];
-  const safeTier: Tier = validTiers.includes(tier as Tier) ? (tier as Tier) : 'free';
+  // A paid tier requested at signup is only an *intent* to upgrade — it never
+  // grants a paid key. Paid tiers are granted solely by the Stripe webhook
+  // after a successful payment. (Previously the requested tier was written
+  // onto the key, handing out free Pro/Business keys.)
+  const intendedTier = isPaidTier(tier) ? tier : undefined;
 
   // Upsert user (record acquisition source on first insert only).
   const userId = crypto.randomUUID();
@@ -291,13 +294,12 @@ app.post('/register', async c => {
     return htmlResponse(registerPage('Database error — please try again'), 500);
   }
 
-  // Generate API key
+  // Generate API key — ALWAYS on the free tier at signup.
   const rawKey = generateRawKey();
   const keyHash = await sha256(rawKey);
   const keyPrefix = rawKey.slice(0, 12);
   const keyId = crypto.randomUUID();
   const resetAt = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-  const monthlyLimit = TIER_LIMITS[safeTier];
 
   await c.env.DB
     .prepare(
@@ -305,10 +307,10 @@ app.post('/register', async c => {
          (id, user_id, name, key_prefix, key_hash, tier, monthly_limit, usage_reset_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(keyId, user.id, keyname, keyPrefix, keyHash, safeTier, monthlyLimit, resetAt)
+    .bind(keyId, user.id, keyname, keyPrefix, keyHash, 'free', TIER_LIMITS.free, resetAt)
     .run();
 
-  return htmlResponse(keyCreatedPage(rawKey, email, safeTier));
+  return htmlResponse(keyCreatedPage(rawKey, email, intendedTier));
 });
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
