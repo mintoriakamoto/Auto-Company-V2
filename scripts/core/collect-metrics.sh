@@ -23,6 +23,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUT_FILE="${METRICS_OUT:-$PROJECT_DIR/memories/metrics.json}"
+HEALTH_FILE="${HEALTH_OUT:-$PROJECT_DIR/memories/metrics-health.json}"
 METRICS_URL="${METRICS_URL:-}"
 METRICS_FILE="${METRICS_FILE:-}"
 METRICS_TOKEN="${METRICS_TOKEN:-}"
@@ -53,12 +54,23 @@ write_if_valid() {
     return 1
 }
 
+write_health() {
+    # Record whether the product's metrics endpoint is reachable, so the loop
+    # gets an uptime signal (a down product = silent churn otherwise).
+    printf '{"reachable":%s,"checked_at":"%s"}\n' \
+        "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$HEALTH_FILE" 2>/dev/null || true
+}
+
 if [ -n "$METRICS_URL" ]; then
     if command -v curl >/dev/null 2>&1; then
         auth=()
         [ -n "$METRICS_TOKEN" ] && auth=(-H "Authorization: Bearer $METRICS_TOKEN")
         body="$(curl -fsS --max-time "$METRICS_TIMEOUT" "${auth[@]}" "$METRICS_URL" 2>/dev/null || true)"
-        write_if_valid "$body" || true
+        if write_if_valid "$body"; then
+            write_health true
+        else
+            write_health false
+        fi
     else
         echo "metrics: curl not available; cannot fetch METRICS_URL" >&2
     fi

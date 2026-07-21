@@ -28,8 +28,15 @@ If this is the very first run, `deploy.sh` creates the D1 database and prints a
 npx wrangler secret put STRIPE_SECRET_KEY       # sk_test_... to start
 npx wrangler secret put STRIPE_WEBHOOK_SECRET    # from step 3
 npx wrangler secret put ADMIN_METRICS_TOKEN      # long random string
-npx wrangler secret put AUTH_SECRET              # long random string
+npx wrangler secret put AUTH_SECRET              # long random string (also encrypts keys for recovery)
+npx wrangler secret put RESEND_API_KEY           # optional: enables key-delivery / receipts / recovery emails
 ```
+
+Email is optional: without `RESEND_API_KEY` + `EMAIL_FROM`, the product works
+but sends no email (keys are shown once on screen, and recovery is disabled).
+With them set, new keys are emailed, `/recover` re-sends a lost key, paid
+upgrades get a receipt, and inactive free users get a nudge (via the daily
+cron). The webhook should also subscribe to `invoice.payment_failed`.
 
 ## 3. Stripe
 

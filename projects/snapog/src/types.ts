@@ -77,6 +77,10 @@ export interface Env {
   LEGAL_ENTITY?: string;
   LEGAL_EMAIL?: string;
   LEGAL_JURISDICTION?: string;
+
+  // Transactional email (Resend). No email is sent until both are set.
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string; // e.g. "SnapOG <keys@snapog.dev>"
 }
 
 // Maps a Stripe Price id back to the tier it grants. Built at request time

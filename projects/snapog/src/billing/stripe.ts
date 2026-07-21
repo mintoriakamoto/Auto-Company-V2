@@ -144,7 +144,11 @@ async function stripeGet(
 
 interface StripeSubscription {
   status?: string;
-  items?: { data?: Array<{ price?: { unit_amount?: number; recurring?: { interval?: string } } }> };
+  items?: {
+    data?: Array<{
+      price?: { id?: string; unit_amount?: number; recurring?: { interval?: string } };
+    }>;
+  };
 }
 
 // Monthly recurring revenue in whole USD from a list of subscriptions. Only
@@ -169,24 +173,52 @@ export function computeStripeMrr(subs: StripeSubscription[]): {
   return { mrr_usd: Math.round(cents / 100), active };
 }
 
-// Fetch all subscriptions (paginated) and compute authoritative MRR.
-export async function fetchStripeMrr(
+// A subscription with the fields reconciliation needs.
+export interface SubscriptionSummary {
+  id: string;
+  customer: string;
+  status: string;
+  priceId: string | undefined;
+}
+
+// Fetch all subscriptions (paginated), returning both the raw list (for MRR)
+// and a normalized summary (for reconciliation).
+export async function fetchSubscriptions(
   secretKey: string
-): Promise<{ mrr_usd: number; active: number }> {
-  const subs: StripeSubscription[] = [];
+): Promise<{ raw: StripeSubscription[]; summaries: SubscriptionSummary[] }> {
+  const raw: StripeSubscription[] = [];
+  const summaries: SubscriptionSummary[] = [];
   let startingAfter: string | undefined;
-  // Cap pages defensively; a young SaaS will have far fewer.
   for (let page = 0; page < 20; page++) {
     const qs = new URLSearchParams({ status: 'all', limit: '100' });
     if (startingAfter) qs.set('starting_after', startingAfter);
     const data = await stripeGet(secretKey, `/subscriptions?${qs.toString()}`);
-    const batch = (data.data as Array<StripeSubscription & { id?: string }>) ?? [];
-    subs.push(...batch);
+    const batch =
+      (data.data as Array<
+        StripeSubscription & { id?: string; customer?: string }
+      >) ?? [];
+    for (const sub of batch) {
+      raw.push(sub);
+      summaries.push({
+        id: typeof sub.id === 'string' ? sub.id : '',
+        customer: typeof sub.customer === 'string' ? sub.customer : '',
+        status: sub.status ?? '',
+        priceId: sub.items?.data?.[0]?.price?.id,
+      });
+    }
     if (!data.has_more || batch.length === 0) break;
     startingAfter = batch[batch.length - 1]?.id;
     if (!startingAfter) break;
   }
-  return computeStripeMrr(subs);
+  return { raw, summaries };
+}
+
+// Fetch all subscriptions (paginated) and compute authoritative MRR.
+export async function fetchStripeMrr(
+  secretKey: string
+): Promise<{ mrr_usd: number; active: number }> {
+  const { raw } = await fetchSubscriptions(secretKey);
+  return computeStripeMrr(raw);
 }
 
 // Current Stripe balance (money on the way to your bank), in whole USD.

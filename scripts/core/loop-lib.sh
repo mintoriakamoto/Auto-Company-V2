@@ -283,6 +283,14 @@ render_live_metrics() {
     # injection into the cycle prompt. Empty output when there is no metrics
     # file, so the prompt section is simply omitted. Never fails the cycle.
     local metrics_file="${1:-$PROJECT_DIR/memories/metrics.json}"
+    local health_file="${2:-$PROJECT_DIR/memories/metrics-health.json}"
+
+    # Product-down signal: if the last metrics fetch failed, warn loudly — a
+    # down product means customers can't generate images and churn silently.
+    if [ -f "$health_file" ] && grep -q '"reachable":false' "$health_file" 2>/dev/null; then
+        echo "- ⚠ PRODUCT UNREACHABLE: the metrics endpoint failed last check. The product may be DOWN — investigate uptime before anything else."
+    fi
+
     [ -f "$metrics_file" ] || return 0
     [ -s "$metrics_file" ] || return 0
 
@@ -299,10 +307,13 @@ render_live_metrics() {
                     + (((.paying // 0)) | tostring) + "/" + (((.signups // 0)) | tostring) + " paying")
              else empty end),
             (if (.funnel | type) == "object" then
-                "- Funnel (where money leaks): limit_reached "
-                    + (((.funnel.limit_reached // 0)) | tostring)
-                    + " -> checkout_started " + (((.funnel.checkout_started // 0)) | tostring)
-                    + " -> converted " + (((.funnel.converted // 0)) | tostring)
+                "- Funnel (where money leaks): landing "
+                    + (((.funnel.landing_viewed // 0)) | tostring)
+                    + " -> register " + (((.funnel.register_viewed // 0)) | tostring)
+                    + " -> signup " + (((.signups // 0)) | tostring)
+                    + " -> limit " + (((.funnel.limit_reached // 0)) | tostring)
+                    + " -> checkout " + (((.funnel.checkout_started // 0)) | tostring)
+                    + " -> paid " + (((.funnel.converted // 0)) | tostring)
              else empty end),
             (if (.stripe | type) == "object" and (.stripe.error == null) then
                 "- Stripe (authoritative): $" + (((.stripe.mrr_usd // 0)) | tostring)

@@ -60,6 +60,12 @@ describe('computeMetrics', () => {
 
 describe('computeFunnel', () => {
   const rows: FunnelEventRow[] = [
+    { event: 'landing_viewed' },
+    { event: 'landing_viewed' },
+    { event: 'landing_viewed' },
+    { event: 'landing_viewed' },
+    { event: 'register_viewed' },
+    { event: 'register_viewed' },
     { event: 'limit_reached' },
     { event: 'limit_reached' },
     { event: 'limit_reached' },
@@ -70,17 +76,21 @@ describe('computeFunnel', () => {
     { event: 'noise' }, // ignored
   ];
 
-  it('counts stages and computes stage-to-stage rates', () => {
+  it('counts stages and computes stage-to-stage rates, including the top', () => {
     const f = computeFunnel(rows);
+    expect(f.landing_viewed).toBe(4);
+    expect(f.register_viewed).toBe(2);
     expect(f.limit_reached).toBe(4);
     expect(f.checkout_started).toBe(2);
     expect(f.converted).toBe(1);
+    expect(f.landing_to_register).toBeCloseTo(0.5); // 2/4 — top-of-funnel leak now visible
     expect(f.limit_to_checkout).toBeCloseTo(0.5); // 2/4
     expect(f.checkout_to_paid).toBeCloseTo(0.5); // 1/2
   });
 
   it('avoids divide-by-zero on empty stages', () => {
     const f = computeFunnel([]);
+    expect(f.landing_to_register).toBe(0);
     expect(f.limit_to_checkout).toBe(0);
     expect(f.checkout_to_paid).toBe(0);
   });

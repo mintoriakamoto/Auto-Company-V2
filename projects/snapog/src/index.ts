@@ -7,6 +7,7 @@ import {
   landingPage,
   registerPage,
   keyCreatedPage,
+  recoverPage,
   dashboardPage,
   errorPage,
   termsPage,
@@ -23,8 +24,12 @@ import {
   timingSafeEqual,
   fetchStripeMrr,
   fetchStripeBalance,
+  fetchSubscriptions,
 } from './billing/stripe';
 import { computeMetrics, normalizeSource, subscriptionGrant, type UserRow } from './metrics';
+import { planReconciliation, type ReconcileUser } from './reconcile';
+import { encryptSecret, decryptSecret } from './crypto';
+import { sendEmail, apiKeyEmail, receiptEmail, activationNudgeEmail, emailConfigured } from './email';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -91,35 +96,55 @@ async function maybeResetUsage(db: D1Database, key: ApiKey): Promise<ApiKey> {
   return key;
 }
 
-// Increment usage counter and record event
-async function recordUsage(
+// Atomically reserve one image against the monthly quota BEFORE doing any
+// work. The conditional UPDATE both enforces the limit and counts usage in a
+// single race-free step (no read-then-check window, no fire-and-forget
+// undercount). Returns true if a slot was reserved, false if at the limit.
+async function reserveUsage(db: D1Database, key: ApiKey): Promise<boolean> {
+  const res = await db
+    .prepare(
+      'UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ? AND usage_count < monthly_limit'
+    )
+    .bind(key.id)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
+}
+
+// Give a reserved slot back when the work fails, so a generation error does
+// not silently burn a customer's quota.
+async function refundUsage(db: D1Database, key: ApiKey): Promise<void> {
+  await db
+    .prepare('UPDATE api_keys SET usage_count = usage_count - 1 WHERE id = ? AND usage_count > 0')
+    .bind(key.id)
+    .run();
+}
+
+// Analytics only (billing already accounted for by reserveUsage).
+async function recordUsageEvent(
   db: D1Database,
   key: ApiKey,
   template: string,
   cacheHit: boolean
 ): Promise<void> {
-  const eventId = crypto.randomUUID();
-  await db.batch([
-    // Conditional increment so concurrent requests cannot push usage_count
-    // past monthly_limit — the stored counter can never run away even though
-    // the pre-generation check and this increment are separate steps.
-    db
-      .prepare(
-        'UPDATE api_keys SET usage_count = usage_count + 1 WHERE id = ? AND usage_count < monthly_limit'
-      )
-      .bind(key.id),
-    db
-      .prepare(
-        'INSERT INTO usage_events (id, api_key_id, template, cache_hit) VALUES (?, ?, ?, ?)'
-      )
-      .bind(eventId, key.id, template, cacheHit ? 1 : 0),
-  ]);
+  await db
+    .prepare(
+      'INSERT INTO usage_events (id, api_key_id, template, cache_hit) VALUES (?, ?, ?, ?)'
+    )
+    .bind(crypto.randomUUID(), key.id, template, cacheHit ? 1 : 0)
+    .run();
 }
+
+type FunnelEvent =
+  | 'landing_viewed'
+  | 'register_viewed'
+  | 'limit_reached'
+  | 'checkout_started'
+  | 'converted';
 
 // Record a conversion-funnel event (fire-and-forget; never blocks the response).
 async function recordFunnelEvent(
   db: D1Database,
-  event: 'limit_reached' | 'checkout_started' | 'converted',
+  event: FunnelEvent,
   apiKeyId: string | null,
   source: string | null
 ): Promise<void> {
@@ -129,11 +154,23 @@ async function recordFunnelEvent(
     .run();
 }
 
+// Cheap bot filter so top-of-funnel view counts aren't dominated by crawlers.
+function isLikelyBot(userAgent: string | undefined): boolean {
+  if (!userAgent) return true;
+  return /bot|crawl|spider|slurp|bingpreview|facebookexternalhit|headless|curl|wget|python-requests|monitor|preview/i.test(
+    userAgent
+  );
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // Landing page
 app.get('/', c => {
   const host = new URL(c.req.url).host;
+  if (!isLikelyBot(c.req.header('user-agent'))) {
+    const source = normalizeSource(c.req.query('ref') ?? c.req.query('utm_source'));
+    c.executionCtx.waitUntil(recordFunnelEvent(c.env.DB, 'landing_viewed', null, source));
+  }
   return htmlResponse(landingPage(host));
 });
 
@@ -160,9 +197,11 @@ app.get('/og', async c => {
   // Reset usage if month rolled
   apiKey = await maybeResetUsage(c.env.DB, apiKey);
 
-  // Check rate limit. Hitting the limit is the highest-intent upgrade moment,
-  // so record it and point the caller at their dashboard to upgrade in place.
-  if (apiKey.usage_count >= apiKey.monthly_limit) {
+  // Atomically reserve a slot BEFORE any work. This both enforces the limit
+  // and counts the usage race-free. Hitting the limit is the highest-intent
+  // upgrade moment, so record it and point the caller at their dashboard.
+  const reserved = await reserveUsage(c.env.DB, apiKey);
+  if (!reserved) {
     c.executionCtx.waitUntil(recordFunnelEvent(c.env.DB, 'limit_reached', apiKey.id, apiKey.tier));
     const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
     return c.json(
@@ -195,8 +234,8 @@ app.get('/og', async c => {
   // ── R2 cache lookup ──
   const cached = await c.env.OG_CACHE.get(r2Key);
   if (cached) {
-    // Cache hit — return stored PNG, still track usage (counts toward limit)
-    await recordUsage(c.env.DB, apiKey, params.template ?? 'default', true);
+    // Cache hit — slot already reserved above; just log the analytics event.
+    c.executionCtx.waitUntil(recordUsageEvent(c.env.DB, apiKey, params.template ?? 'default', true));
     const imageData = await cached.arrayBuffer();
     return new Response(imageData, {
       headers: {
@@ -214,8 +253,10 @@ app.get('/og', async c => {
     const imageResponse = await generateOGImage(params, watermark);
     imageBuffer = await imageResponse.arrayBuffer();
   } catch (err) {
-    // Never return an HTML error body to a client that requested image/png
-    // (a scraper or <img> tag). Respond JSON so the failure is unambiguous.
+    // Generation failed — refund the reserved slot so the customer is not
+    // charged a quota unit for a broken image, then return JSON (never HTML
+    // to an image client).
+    await refundUsage(c.env.DB, apiKey);
     console.error('OG image generation failed:', err);
     return c.json({ error: 'Failed to generate image' }, 500);
   }
@@ -228,9 +269,9 @@ app.get('/og', async c => {
     })
   );
 
-  // Record usage (also fire-and-forget after we have the image)
+  // Log the analytics event (usage count already reserved).
   c.executionCtx.waitUntil(
-    recordUsage(c.env.DB, apiKey, params.template ?? 'default', false)
+    recordUsageEvent(c.env.DB, apiKey, params.template ?? 'default', false)
   );
 
   return new Response(imageBuffer, {
@@ -252,6 +293,9 @@ app.get('/register', c => {
   // Acquisition attribution: carry ?ref= (or utm_source) into the form so it
   // is stored on the user at signup. Gives the loop per-channel conversion.
   const source = normalizeSource(c.req.query('ref') ?? c.req.query('utm_source'));
+  if (!isLikelyBot(c.req.header('user-agent'))) {
+    c.executionCtx.waitUntil(recordFunnelEvent(c.env.DB, 'register_viewed', null, source));
+  }
   return htmlResponse(registerPage(undefined, tier, source));
 });
 
@@ -300,17 +344,63 @@ app.post('/register', async c => {
   const keyPrefix = rawKey.slice(0, 12);
   const keyId = crypto.randomUUID();
   const resetAt = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+  // Store the key encrypted at rest (if configured) so it can be re-sent to
+  // the owner's email on recovery.
+  const keyEncrypted = c.env.AUTH_SECRET
+    ? await encryptSecret(c.env.AUTH_SECRET, rawKey)
+    : null;
 
   await c.env.DB
     .prepare(
       `INSERT INTO api_keys
-         (id, user_id, name, key_prefix, key_hash, tier, monthly_limit, usage_reset_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, user_id, name, key_prefix, key_hash, tier, monthly_limit, usage_reset_at, key_encrypted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(keyId, user.id, keyname, keyPrefix, keyHash, 'free', TIER_LIMITS.free, resetAt)
+    .bind(keyId, user.id, keyname, keyPrefix, keyHash, 'free', TIER_LIMITS.free, resetAt, keyEncrypted)
     .run();
 
+  // Deliver the key by email too, so a closed tab doesn't lose access.
+  const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
+  c.executionCtx.waitUntil(sendEmail(c.env, apiKeyEmail(email, rawKey, base)));
+
   return htmlResponse(keyCreatedPage(rawKey, email, intendedTier));
+});
+
+// ── Key recovery ──────────────────────────────────────────────────────────────
+// Re-send an existing key to its owner's email. Always returns a neutral
+// message (never reveals whether an email is registered), and only works when
+// AUTH_SECRET (to decrypt) and email are configured.
+app.get('/recover', () => htmlResponse(recoverPage()));
+
+app.post('/recover', async c => {
+  let email = '';
+  try {
+    const form = await c.req.formData();
+    email = (form.get('email') as string ?? '').trim().toLowerCase();
+  } catch {
+    return htmlResponse(recoverPage('Invalid form data'), 400);
+  }
+
+  const neutral = "If that email has a key, we've sent it. Check your inbox.";
+  if (email && c.env.AUTH_SECRET) {
+    const row = await c.env.DB
+      .prepare(
+        `SELECT k.key_encrypted AS enc FROM api_keys k
+           JOIN users u ON u.id = k.user_id
+          WHERE u.email = ? AND k.key_encrypted IS NOT NULL
+          ORDER BY k.created_at DESC LIMIT 1`
+      )
+      .bind(email)
+      .first<{ enc: string }>();
+    if (row?.enc) {
+      const rawKey = await decryptSecret(c.env.AUTH_SECRET, row.enc);
+      if (rawKey) {
+        const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
+        c.executionCtx.waitUntil(sendEmail(c.env, apiKeyEmail(email, rawKey, base)));
+      }
+    }
+  }
+  return htmlResponse(recoverPage(undefined, neutral));
 });
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -495,9 +585,12 @@ app.post('/billing/webhook', async c => {
           // free once Stripe finally gives up (canceled/unpaid/etc).
           const grant = subscriptionGrant(status, tier);
           await applyTierToUser(c.env.DB, user.id, grant.tier, grant.status, subId);
-          // Record the conversion the first time this account starts paying.
+          // Record the conversion the first time this account starts paying,
+          // and send a receipt/welcome email.
           if (isPaidTier(grant.tier) && !wasPaying) {
             await recordFunnelEvent(c.env.DB, 'converted', null, user.source ?? null);
+            const base = (c.env.APP_URL ?? new URL(c.req.url).origin).replace(/\/$/, '');
+            c.executionCtx.waitUntil(sendEmail(c.env, receiptEmail(user.email, grant.tier, base)));
           }
         }
         break;
@@ -534,6 +627,47 @@ app.post('/billing/webhook', async c => {
   return c.json({ received: true });
 });
 
+// Authoritative money numbers from Stripe, cached ~60s in the Cache API so the
+// loop hitting /admin/metrics every cycle doesn't hammer Stripe (rate limits +
+// latency). Best-effort: never throws; returns undefined/error on failure.
+const STRIPE_CACHE_KEY = 'https://snapog.internal/cache/stripe-metrics';
+async function getStripeSnapshot(env: Env): Promise<Record<string, unknown> | undefined> {
+  if (!env.STRIPE_SECRET_KEY) return undefined;
+
+  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
+  if (cache) {
+    const hit = await cache.match(STRIPE_CACHE_KEY);
+    if (hit) return (await hit.json()) as Record<string, unknown>;
+  }
+
+  let snapshot: Record<string, unknown>;
+  try {
+    const [mrr, balance] = await Promise.all([
+      fetchStripeMrr(env.STRIPE_SECRET_KEY),
+      fetchStripeBalance(env.STRIPE_SECRET_KEY),
+    ]);
+    snapshot = {
+      mrr_usd: mrr.mrr_usd,
+      active_subscriptions: mrr.active,
+      balance_available_usd: balance.available_usd,
+      balance_pending_usd: balance.pending_usd,
+    };
+  } catch (err) {
+    console.error('Stripe revenue read failed:', err);
+    return { error: 'stripe_read_failed' };
+  }
+
+  if (cache) {
+    await cache.put(
+      STRIPE_CACHE_KEY,
+      new Response(JSON.stringify(snapshot), {
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=60' },
+      })
+    );
+  }
+  return snapshot;
+}
+
 // ── Growth metrics (ground truth for the autonomous loop) ────────────────────
 // Token-protected JSON: signups, paying customers, MRR, conversion rate, and a
 // per-source breakdown so the loop can double down on channels that convert.
@@ -554,28 +688,7 @@ app.get('/admin/metrics', async c => {
   ]);
   const metrics = computeMetrics(rows.results ?? [], funnelRows.results ?? []);
 
-  // Best-effort authoritative money numbers straight from Stripe (real
-  // successful payments + balance heading to your bank). Our DB counts are the
-  // funnel; this is the truth. Never fails the endpoint if Stripe is down.
-  let stripe: Record<string, unknown> | undefined;
-  if (c.env.STRIPE_SECRET_KEY) {
-    try {
-      const [mrr, balance] = await Promise.all([
-        fetchStripeMrr(c.env.STRIPE_SECRET_KEY),
-        fetchStripeBalance(c.env.STRIPE_SECRET_KEY),
-      ]);
-      stripe = {
-        mrr_usd: mrr.mrr_usd,
-        active_subscriptions: mrr.active,
-        balance_available_usd: balance.available_usd,
-        balance_pending_usd: balance.pending_usd,
-      };
-    } catch (err) {
-      console.error('Stripe revenue read failed:', err);
-      stripe = { error: 'stripe_read_failed' };
-    }
-  }
-
+  const stripe = await getStripeSnapshot(c.env);
   return c.json({ ...metrics, stripe, generated_at: new Date().toISOString() });
 });
 
@@ -594,7 +707,17 @@ app.get('/privacy', c => htmlResponse(privacyPage(legalConfig(c.env))));
 app.get('/refunds', c => htmlResponse(refundPage(legalConfig(c.env))));
 
 // ── Health / ops ──────────────────────────────────────────────────────────────
-app.get('/health', c => c.json({ ok: true, ts: new Date().toISOString() }));
+// Deep check: confirm the database is actually reachable, so an external
+// uptime monitor (or the loop) gets a real signal, not just "process alive".
+app.get('/health', async c => {
+  try {
+    await c.env.DB.prepare('SELECT 1').first();
+    return c.json({ ok: true, db: 'ok', ts: new Date().toISOString() });
+  } catch (err) {
+    console.error('Health check DB failure:', err);
+    return c.json({ ok: false, db: 'down', ts: new Date().toISOString() }, 503);
+  }
+});
 
 // 404 fallback
 app.notFound(_c => htmlResponse(errorPage(404, 'Page not found'), 404));
@@ -603,4 +726,79 @@ app.onError((err, _c) => {
   return htmlResponse(errorPage(500, 'Internal server error'), 500);
 });
 
-export default app;
+// ── Scheduled (cron) — money hygiene that webhooks can't guarantee ───────────
+async function reconcileSubscriptions(env: Env): Promise<void> {
+  if (!env.STRIPE_SECRET_KEY) return;
+  const { summaries } = await fetchSubscriptions(env.STRIPE_SECRET_KEY);
+  const users = await env.DB
+    .prepare(
+      'SELECT id, stripe_customer_id, billing_tier FROM users WHERE stripe_customer_id IS NOT NULL'
+    )
+    .all<ReconcileUser>();
+  const changes = planReconciliation(
+    users.results ?? [],
+    summaries,
+    priceId => priceIdToTier(env, priceId)
+  );
+  for (const change of changes) {
+    await env.DB.batch([
+      env.DB
+        .prepare('UPDATE users SET billing_tier = ?, billing_status = ? WHERE id = ?')
+        .bind(change.tier, 'reconciled', change.userId),
+      env.DB
+        .prepare('UPDATE api_keys SET tier = ?, monthly_limit = ? WHERE user_id = ?')
+        .bind(change.tier, TIER_LIMITS[change.tier], change.userId),
+    ]);
+  }
+  if (changes.length > 0) {
+    console.log(`Reconciled ${changes.length} account(s) against Stripe.`);
+  }
+}
+
+async function sendActivationNudges(env: Env): Promise<void> {
+  if (!emailConfigured(env) || !env.AUTH_SECRET) return;
+  const base = (env.APP_URL ?? '').replace(/\/$/, '');
+  // Free users who signed up 2–3 days ago and have never generated an image.
+  // The 1-day window means a daily cron nudges each such user roughly once
+  // without needing a "nudged" flag.
+  const rows = await env.DB
+    .prepare(
+      `SELECT u.email AS email, k.key_encrypted AS enc
+         FROM users u JOIN api_keys k ON k.user_id = u.id
+        WHERE COALESCE(u.billing_tier,'free') = 'free'
+          AND k.key_encrypted IS NOT NULL
+          AND u.created_at < datetime('now','-2 days')
+          AND u.created_at >= datetime('now','-3 days')
+          AND NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.api_key_id = k.id)
+        LIMIT 50`
+    )
+    .all<{ email: string; enc: string }>();
+  for (const row of rows.results ?? []) {
+    const rawKey = await decryptSecret(env.AUTH_SECRET, row.enc);
+    if (rawKey) await sendEmail(env, activationNudgeEmail(row.email, rawKey, base));
+  }
+}
+
+async function runScheduled(env: Env): Promise<void> {
+  try {
+    await reconcileSubscriptions(env);
+  } catch (err) {
+    console.error('Reconcile failed:', err);
+  }
+  try {
+    await sendActivationNudges(env);
+  } catch (err) {
+    console.error('Activation nudges failed:', err);
+  }
+}
+
+export default {
+  fetch: app.fetch,
+  scheduled: async (
+    _event: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> => {
+    ctx.waitUntil(runScheduled(env));
+  },
+} satisfies ExportedHandler<Env>;

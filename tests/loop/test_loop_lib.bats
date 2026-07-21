@@ -325,6 +325,21 @@ EOF
     [[ "$output" == *"reddit: \$49 MRR"* ]]
 }
 
+@test "render_live_metrics warns when the product is unreachable" {
+    echo '{"reachable":false,"checked_at":"2026-07-21T00:00:00Z"}' > "$WORK/health.json"
+    run render_live_metrics "$WORK/none.json" "$WORK/health.json"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PRODUCT UNREACHABLE"* ]]
+}
+
+@test "render_live_metrics does not warn when reachable" {
+    echo '{"reachable":true,"checked_at":"2026-07-21T00:00:00Z"}' > "$WORK/health.json"
+    write_valid_consensus  # unrelated; just need some file
+    run render_live_metrics "$WORK/none.json" "$WORK/health.json"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"PRODUCT UNREACHABLE"* ]]
+}
+
 @test "render_live_metrics surfaces the funnel when present" {
     cat > "$WORK/metrics.json" << 'EOF'
 {"mrr_usd":19,"paying_customers":1,"signups":8,"conversion_rate":0.125,
@@ -335,8 +350,8 @@ EOF
     run render_live_metrics "$WORK/metrics.json"
     [ "$status" -eq 0 ]
     [[ "$output" == *"Funnel (where money leaks)"* ]]
-    [[ "$output" == *"limit_reached 6"* ]]
-    [[ "$output" == *"converted 1"* ]]
+    [[ "$output" == *"limit 6"* ]]
+    [[ "$output" == *"paid 1"* ]]
 }
 
 # --- engine resolution --------------------------------------------

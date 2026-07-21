@@ -35,13 +35,17 @@ export interface SourceStat {
 }
 
 export interface FunnelCounts {
+  landing_viewed: number;
+  register_viewed: number;
   limit_reached: number;
   checkout_started: number;
   converted: number;
 }
 
 export interface Funnel extends FunnelCounts {
-  // Rates between stages, 0..1. Tell the loop where the leak is.
+  // Rates between stages, 0..1. Tell the loop where the leak is — including
+  // the top of the funnel (visitors who never sign up), which was invisible.
+  landing_to_register: number; // register_viewed / landing_viewed
   limit_to_checkout: number; // checkout_started / limit_reached
   checkout_to_paid: number; // converted / checkout_started
 }
@@ -60,10 +64,22 @@ export interface FunnelEventRow {
   event: string;
 }
 
-const FUNNEL_STAGES = ['limit_reached', 'checkout_started', 'converted'] as const;
+const FUNNEL_STAGES = [
+  'landing_viewed',
+  'register_viewed',
+  'limit_reached',
+  'checkout_started',
+  'converted',
+] as const;
 
 export function computeFunnel(rows: FunnelEventRow[]): Funnel {
-  const counts: FunnelCounts = { limit_reached: 0, checkout_started: 0, converted: 0 };
+  const counts: FunnelCounts = {
+    landing_viewed: 0,
+    register_viewed: 0,
+    limit_reached: 0,
+    checkout_started: 0,
+    converted: 0,
+  };
   for (const row of rows) {
     if ((FUNNEL_STAGES as readonly string[]).includes(row.event)) {
       counts[row.event as keyof FunnelCounts] += 1;
@@ -71,6 +87,8 @@ export function computeFunnel(rows: FunnelEventRow[]): Funnel {
   }
   return {
     ...counts,
+    landing_to_register:
+      counts.landing_viewed > 0 ? counts.register_viewed / counts.landing_viewed : 0,
     limit_to_checkout:
       counts.limit_reached > 0 ? counts.checkout_started / counts.limit_reached : 0,
     checkout_to_paid:

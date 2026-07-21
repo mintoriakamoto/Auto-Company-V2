@@ -729,13 +729,40 @@ export function registerPage(error?: string, tier?: string, source?: string): st
       </div>
 
       <p style="font-size:13px;color:var(--text-3);margin-top:20px;text-align:center;">
-        Already have a key? <a href="/dashboard">View your dashboard</a>
+        Already have a key? <a href="/dashboard">View your dashboard</a> ·
+        Lost it? <a href="/recover">Email me my key</a>
       </p>
     </div>
   </section>
   ${footer()}`;
 
   return layout('Get API Key', body);
+}
+
+export function recoverPage(error?: string, notice?: string): string {
+  const body = `
+  ${nav()}
+  <section class="section">
+    <div class="container" style="max-width:480px;">
+      <p class="section-title">Recover Access</p>
+      <h1 class="section-h2">Email me my key</h1>
+      <p class="section-sub" style="margin-bottom:32px;">Enter your email and we'll re-send your API key to it.</p>
+      ${error ? `<div class="alert alert-error">${escapeHtml(error)}</div>` : ''}
+      ${notice ? `<div class="alert alert-success">${escapeHtml(notice)}</div>` : ''}
+      <div class="card">
+        <form method="POST" action="/recover">
+          <div class="form-group">
+            <label class="form-label" for="email">EMAIL ADDRESS</label>
+            <input class="form-input" type="email" name="email" id="email" placeholder="you@example.com" required autocomplete="email" />
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;padding:14px;font-size:15px;">Send my key →</button>
+        </form>
+      </div>
+      <p style="margin-top:16px;font-size:13px;color:var(--text-3);">No key yet? <a href="/register">Create one →</a></p>
+    </div>
+  </section>
+  ${footer()}`;
+  return layout('Recover Access', body);
 }
 
 export function keyCreatedPage(
