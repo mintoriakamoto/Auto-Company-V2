@@ -105,6 +105,8 @@ run_codex_cycle() {
     message_file=$(mktemp)
 
     set +e
+    # exec so the tracked PID is the engine itself (killable on timeout, no
+    # orphaned spend) — same rationale as run_claude_cycle.
     (
         cd "$PROJECT_DIR" || exit 1
         local codex_cmd=("$RESOLVED_ENGINE_BIN" "exec" "-c" "sandbox_mode=\"${CODEX_SANDBOX_MODE}\"" "-o" "$message_file")
@@ -112,7 +114,7 @@ run_codex_cycle() {
             codex_cmd+=("-m" "$MODEL")
         fi
         codex_cmd+=("$prompt")
-        "${codex_cmd[@]}"
+        exec "${codex_cmd[@]}"
     ) > "$output_file" 2>&1 &
     local codex_pid=$!
 
@@ -149,12 +151,17 @@ run_codex_cycle() {
 
 run_claude_cycle() {
     local prompt="$1"
-    local output_file timeout_flag
+    local stdout_file stderr_file timeout_flag
 
-    output_file=$(mktemp)
+    stdout_file=$(mktemp)
+    stderr_file=$(mktemp)
     timeout_flag=$(mktemp)
 
     set +e
+    # `exec` replaces the subshell with the engine so the PID we track (and
+    # kill on timeout) IS the engine — not a wrapper shell that would leave the
+    # engine (and its API spend) orphaned. stdout (the JSON result) is captured
+    # separately from stderr so warnings can't corrupt the JSON cost parse.
     (
         cd "$PROJECT_DIR" || exit 1
         local claude_cmd=("$RESOLVED_ENGINE_BIN" "-p" "$prompt" "--output-format" "json")
@@ -164,8 +171,8 @@ run_claude_cycle() {
         if [ -n "$CLAUDE_PERMISSION_MODE" ]; then
             claude_cmd+=("--permission-mode" "$CLAUDE_PERMISSION_MODE")
         fi
-        "${claude_cmd[@]}"
-    ) > "$output_file" 2>&1 &
+        exec "${claude_cmd[@]}"
+    ) > "$stdout_file" 2> "$stderr_file" &
     local claude_pid=$!
 
     (
@@ -186,9 +193,11 @@ run_claude_cycle() {
     wait "$watchdog_pid" 2>/dev/null || true
     set -e
 
-    OUTPUT=$(cat "$output_file")
-    RESULT_MESSAGE="$OUTPUT"
-    rm -f "$output_file"
+    # RESULT_MESSAGE = clean JSON (stdout only) for jq; OUTPUT = combined for
+    # logging and usage-limit detection.
+    RESULT_MESSAGE=$(cat "$stdout_file")
+    OUTPUT=$(cat "$stdout_file" "$stderr_file")
+    rm -f "$stdout_file" "$stderr_file"
 
     if [ -s "$timeout_flag" ]; then
         CYCLE_TIMED_OUT=1
@@ -333,6 +342,13 @@ if [ -n "$engine_version" ]; then
     fi
 fi
 log "Interval: ${LOOP_INTERVAL}s | Timeout: ${CYCLE_TIMEOUT_SECONDS}s | Breaker: ${MAX_CONSECUTIVE_ERRORS} errors"
+
+# The spend cap relies on per-cycle cost, which only the Claude engine reports
+# (via --output-format json). Warn loudly if a cap is set under Codex so it is
+# not silently ineffective.
+if [ "$ENGINE" = "codex" ] && awk -v c="$MAX_TOTAL_COST_USD" 'BEGIN { exit !(c+0 > 0) }'; then
+    log "WARNING: MAX_TOTAL_COST_USD is set but the Codex engine does not report per-cycle cost — the spend cap will NOT take effect. Use ENGINE=claude for an enforced budget."
+fi
 
 # === Main Loop ===
 

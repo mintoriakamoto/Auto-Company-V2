@@ -65,7 +65,7 @@ if [ -n "$METRICS_URL" ]; then
     if command -v curl >/dev/null 2>&1; then
         auth=()
         [ -n "$METRICS_TOKEN" ] && auth=(-H "Authorization: Bearer $METRICS_TOKEN")
-        body="$(curl -fsS --max-time "$METRICS_TIMEOUT" "${auth[@]}" "$METRICS_URL" 2>/dev/null || true)"
+        body="$(curl -fsS --max-time "$METRICS_TIMEOUT" "${auth[@]+"${auth[@]}"}" "$METRICS_URL" 2>/dev/null || true)"
         if write_if_valid "$body"; then
             write_health true
         else
@@ -75,7 +75,11 @@ if [ -n "$METRICS_URL" ]; then
         echo "metrics: curl not available; cannot fetch METRICS_URL" >&2
     fi
 elif [ -n "$METRICS_FILE" ] && [ -f "$METRICS_FILE" ]; then
-    write_if_valid "$(cat "$METRICS_FILE")" || true
+    # Local file source (dev): treat a readable, valid file as reachable so a
+    # stale reachable:false from a previous URL run can't linger.
+    if write_if_valid "$(cat "$METRICS_FILE")"; then
+        write_health true
+    fi
 fi
 
 exit 0

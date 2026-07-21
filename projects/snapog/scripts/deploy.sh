@@ -23,10 +23,14 @@ cd "$PROJECT_DIR"
 
 ENV_ARG=""
 CHECK_ONLY=0
+prev=""
 for arg in "$@"; do
+    if [ "$prev" = "--env" ]; then
+        ENV_ARG="$arg"; prev=""; continue
+    fi
     case "$arg" in
         --check) CHECK_ONLY=1 ;;
-        --env) ;;                       # value consumed below
+        --env) prev="--env" ;;          # next token is the env name
         --env=*) ENV_ARG="${arg#--env=}" ;;
         production|staging) ENV_ARG="$arg" ;;
         *) echo "Unknown arg: $arg" >&2; exit 2 ;;
@@ -75,12 +79,15 @@ if wrangler d1 info snapog-db >/dev/null 2>&1; then
     ok "D1 database snapog-db already exists"
 else
     wrangler d1 create snapog-db || warn "d1 create returned non-zero (may already exist)"
-    warn "Copy the returned database_id into wrangler.toml (all env blocks), then re-run."
+    warn "Copy the returned database_id into wrangler.toml (all env blocks), then re-run ./scripts/deploy.sh."
+    # Stop cleanly here: migrations/deploy can't work until the real
+    # database_id is in wrangler.toml (it still holds the placeholder).
+    exit 0
 fi
 
 # --- 3. Migrations -------------------------------------------------
 step "Applying D1 migrations (remote)"
-wrangler d1 migrations apply snapog-db --remote "${ENV_FLAG[@]}"
+wrangler d1 migrations apply snapog-db --remote "${ENV_FLAG[@]+"${ENV_FLAG[@]}"}"
 ok "migrations applied"
 
 # --- 4. R2 bucket --------------------------------------------------
@@ -106,7 +113,7 @@ SECRETS
 
 # --- 6. Deploy -----------------------------------------------------
 step "Deploying"
-wrangler deploy "${ENV_FLAG[@]}"
+wrangler deploy "${ENV_FLAG[@]+"${ENV_FLAG[@]}"}"
 
 step "Post-deploy checklist"
 cat <<'POST'

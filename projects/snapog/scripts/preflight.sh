@@ -22,12 +22,21 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOML="${PREFLIGHT_TOML:-$PROJECT_DIR/wrangler.toml}"
 
 OFFLINE=0
+ENV_NAME=""
+prev=""
 for arg in "$@"; do
+    if [ "$prev" = "--env" ]; then
+        ENV_NAME="$arg"; prev=""; continue
+    fi
     case "$arg" in
         --offline) OFFLINE=1 ;;
+        --env) prev="--env" ;;
+        --env=*) ENV_NAME="${arg#--env=}" ;;
         *) echo "Unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
+ENV_FLAG=()
+[ -n "$ENV_NAME" ] && ENV_FLAG=(--env "$ENV_NAME")
 
 REQUIRED_FAIL=0
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -84,10 +93,13 @@ if [ "$OFFLINE" -eq 1 ]; then
 else
     if command -v npx >/dev/null 2>&1 && npx --yes wrangler whoami >/dev/null 2>&1; then
         pass "wrangler is authenticated with Cloudflare"
-        # Secrets: presence only (values never shown).
-        secrets="$(npx --yes wrangler secret list 2>/dev/null || true)"
+        # Secrets: presence only (values never shown). Use the same --env as
+        # the deploy so production secrets aren't reported missing.
+        secrets="$(npx --yes wrangler secret list "${ENV_FLAG[@]+"${ENV_FLAG[@]}"}" 2>/dev/null || true)"
         for s in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET ADMIN_METRICS_TOKEN; do
-            if printf '%s' "$secrets" | grep -q "\"$s\"\|$s"; then
+            # grep -E for portable alternation (\| is GNU-only and silently
+            # never matches on BSD/macOS grep).
+            if printf '%s' "$secrets" | grep -Eq "\"?${s}\"?"; then
                 pass "secret $s is set"
             else
                 fail "secret $s is NOT set (run: npx wrangler secret put $s)"

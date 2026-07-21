@@ -295,11 +295,15 @@ render_live_metrics() {
     [ -s "$metrics_file" ] || return 0
 
     if command -v jq >/dev/null 2>&1; then
+        # `n` coerces any field (even a stringified number or null) to a number
+        # so one malformed field can't make the whole jq program fail and dump
+        # raw JSON into the prompt.
         jq -r '
-            "- MRR: $" + (((.mrr_usd // 0)) | tostring)
-            + "  | Paying: " + (((.paying_customers // 0)) | tostring)
-            + "  | Signups: " + (((.signups // 0)) | tostring)
-            + "  | Conversion: " + (((((.conversion_rate // 0) * 1000) | floor) / 10) | tostring) + "%",
+            def n(v): (v | if type == "number" then . else (tonumber? // 0) end);
+            "- MRR: $" + (n(.mrr_usd) | tostring)
+            + "  | Paying: " + (n(.paying_customers) | tostring)
+            + "  | Signups: " + (n(.signups) | tostring)
+            + "  | Conversion: " + (((n(.conversion_rate) * 1000 | floor) / 10) | tostring) + "%",
             (if (.by_source | type) == "array" and (.by_source | length) > 0 then
                 "- By channel (top by MRR):",
                 (.by_source[:5][] | "    " + (.source // "?")

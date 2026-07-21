@@ -65,6 +65,62 @@ json() {
     [ "$status" -eq 2 ]
 }
 
+# --- previously-bypassable cases (must now BLOCK) ------------------
+
+@test "blocks rm -rf of a QUOTED root/home path" {
+    run guard "$(json 'rm -rf "/"')"
+    [ "$status" -eq 2 ]
+    run guard "$(json "rm -rf '/'")"
+    [ "$status" -eq 2 ]
+    run guard "$(json 'rm -rf "$HOME"')"
+    [ "$status" -eq 2 ]
+}
+
+@test "blocks rm -rf of ~/ and ~/*" {
+    run guard "$(json 'rm -rf ~/')"
+    [ "$status" -eq 2 ]
+    run guard "$(json 'rm -rf ~/*')"
+    [ "$status" -eq 2 ]
+}
+
+@test "blocks rm -rf of top-level system dirs" {
+    run guard "$(json 'rm -rf /etc')"
+    [ "$status" -eq 2 ]
+    run guard "$(json 'rm -rf /usr')"
+    [ "$status" -eq 2 ]
+}
+
+@test "blocks non-force recursive rm of root" {
+    run guard "$(json 'rm -r /')"
+    [ "$status" -eq 2 ]
+}
+
+@test "blocks force-push to main via git global options" {
+    run guard "$(json 'git -c protocol.version=2 push --force origin main')"
+    [ "$status" -eq 2 ]
+    run guard "$(json 'git -C . push -f origin main')"
+    [ "$status" -eq 2 ]
+}
+
+@test "blocks writing into ~/.ssh" {
+    run guard "$(json 'echo key >> ~/.ssh/authorized_keys')"
+    [ "$status" -eq 2 ]
+    run guard "$(json 'cp evil ~/.ssh/authorized_keys')"
+    [ "$status" -eq 2 ]
+}
+
+@test "blocks gh api repo deletion" {
+    run guard "$(json 'gh api -X DELETE /repos/owner/name')"
+    [ "$status" -eq 2 ]
+    run guard "$(json 'gh api /repos/owner/name --method DELETE')"
+    [ "$status" -eq 2 ]
+}
+
+@test "newline-separated commands do not cross-contaminate" {
+    # rm of a build dir on one line, a .config read on the next — must ALLOW.
+    printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules\\ncat proj/.config/app"}}' | bash "$GUARD"
+}
+
 # --- must ALLOW (exit 0) — includes prior false-positive cases ----
 
 @test "allows rm of a build dir followed by a .claude path in another segment" {
